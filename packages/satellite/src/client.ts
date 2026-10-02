@@ -1,4 +1,4 @@
-import { X509Certificate, createHash, randomUUID } from 'node:crypto';
+import { X509Certificate, createHash, randomUUID, randomBytes } from 'node:crypto';
 import { checkServerIdentity, type PeerCertificate } from 'node:tls';
 import type { ClientRequestArgs } from 'node:http';
 import { WebSocket } from 'ws';
@@ -28,7 +28,7 @@ export class SatelliteClient {
     status = 'disconnected';
     private socket?: WebSocket;
     private epoch?: string;
-    private resumeToken?: string;
+    private resumeToken = randomBytes(32).toString('base64url');
     private sequence = 0;
     private stopped = false;
     private attempts = 0;

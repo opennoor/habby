@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { TOOL_BY_NAME, authorize } from '../../../shared/catalog.js';
-import { HubError, globalId, parseGlobalId, snapshotSchema, type Principal, type Registration,
+import { HubError, MAX_REQUEST_TIMEOUT_MS, globalId, parseGlobalId, snapshotSchema, type Principal, type Registration,
   type Snapshot, type WireMessage } from '../../../shared/protocol.js';
 
 interface WindowEntry {
@@ -37,7 +37,7 @@ export class WindowRegistry extends EventEmitter {
     validateSnapshot(registration.snapshot);
     const window: WindowEntry = { id: registration.windowId, metadata: registration.metadata,
       capabilities: registration.capabilities, snapshot: registration.snapshot, epoch: randomUUID(),
-      resumeToken: existing?.resumeToken ?? randomBytes(32).toString('base64url'), lastSeen: Date.now(), online: true,
+      resumeToken: existing?.resumeToken ?? registration.resumeToken ?? randomBytes(32).toString('base64url'), lastSeen: Date.now(), online: true,
       revision: (existing?.revision ?? 0) + 1, sequence: 0, send };
     this.windows.set(window.id, window);
     this.emit('topology', window.id);
@@ -147,7 +147,7 @@ export class WindowRegistry extends EventEmitter {
     const id = randomUUID();
     const mutation = TOOL_BY_NAME.get(operation)!.scopes.some(scope => scope !== 'terminal:read' && scope !== 'files:read') ||
       (operation === 'get_session_environment' && params.activeProbe !== false && principal.scopes.includes('terminal:write'));
-    const timeoutMs = operation === 'read_terminal_output' ? 35000 : Math.min(300000, Math.max(150000, Number(params.timeout ?? 30000) + 125000));
+    const timeoutMs = operation === 'read_terminal_output' ? 35000 : Math.min(MAX_REQUEST_TIMEOUT_MS, Math.max(150000, Number(params.timeout ?? 30000) + 125000));
     return new Promise((resolve, reject) => {
       const cancel = (code: string, message: string) => {
         if (!this.pending.delete(id)) return;

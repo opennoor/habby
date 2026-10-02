@@ -85,26 +85,26 @@ export class SatelliteService implements SatelliteAdapter, OnDestroy {
             authorize(principal, operation, params, this.client.windowId);
             if (!this.capabilities().includes(operation)) throw new HubError('DISABLED_TOOL', 'Operation is disabled in this window settings.');
             if (signal.aborted) throw new HubError('CANCELLED', 'Request cancelled.');
-            this.trackStreams();
             const sessionOperation = operation.startsWith('sftp_') || ['exec_command', 'send_input', 'submit_keyboard_interactive_response', 'get_session_environment', 'get_terminal_buffer', 'abort_command', 'focus_pane', 'read_terminal_output'].includes(operation);
             const requiresActiveTab = ['move_tab_left', 'move_tab_right', 'split_tab', 'next_tab', 'previous_tab'].includes(operation);
-            if (params.tabId) {
-                const tab = this.tabs.findTabByLocator({ tabId: params.tabId });
-                if (!tab) throw new HubError('TARGET_GONE', 'Tab ID no longer exists.');
+            const tab = params.tabId ? this.tabs.findTabByLocator({ tabId: params.tabId }) : undefined;
+            if (params.tabId && !tab) throw new HubError('TARGET_GONE', 'Tab ID no longer exists.');
+            let session = params.sessionId ? this.terminal.findSessionByLocator({ sessionId: params.sessionId }) : undefined;
+            if (params.sessionId && !session) throw new HubError('TARGET_GONE', 'Session ID no longer exists.');
+            if (tab && session && session.tabParent !== tab) throw new HubError('TARGET_CONFLICT', 'Session does not belong to the selected tab.');
+            this.trackStreams();
+            if (tab) {
                 if (sessionOperation) {
                     const sessions = this.terminal.findTerminalSessions().filter(session => session.tabParent === tab);
-                    const session = (params.sessionId ? sessions.find(item => item.sessionId === params.sessionId) : sessions.find(item => item.isFocusedPane)) ?? (sessions.length === 1 ? sessions[0] : undefined);
+                    session = session ?? sessions.find(item => item.isFocusedPane) ?? (sessions.length === 1 ? sessions[0] : undefined);
                     if (!session) throw new HubError('AMBIGUOUS_TARGET', 'Tab contains several panes; choose a session ID.');
-                    if (params.sessionId && params.sessionId !== session.sessionId) throw new HubError('TARGET_CONFLICT', 'Session does not match focused tab pane.');
                     params.sessionId = session.sessionId;
                 } else {
                     params.tabIndex = this.app.tabs.indexOf(tab);
                     if (requiresActiveTab) this.app.selectTab(tab);
                 }
             }
-            if (params.sessionId) {
-                const session = this.terminal.findSessionByLocator({ sessionId: params.sessionId });
-                if (!session) throw new HubError('TARGET_GONE', 'Session ID no longer exists.');
+            if (session) {
                 if (!sessionOperation) {
                     params.tabIndex = this.app.tabs.indexOf(session.tabParent);
                     if (requiresActiveTab) {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { WindowRegistry } from '../packages/hub/src/registry.js';
-import { globalId, LOCAL_PRINCIPAL } from '../shared/protocol.js';
+import { globalId, LOCAL_PRINCIPAL, MAX_REQUEST_TIMEOUT_MS, wireMessageSchema } from '../shared/protocol.js';
 
 test('abort during listener attachment prevents request dispatch and clears pending state', async () => {
   const registry = new WindowRegistry(); const windowId = randomUUID(); const messages: any[] = [];
@@ -118,4 +118,28 @@ test('disconnected mutations have unknown outcome and never auto-replay', async 
   assert.notEqual(resumedAgain.epoch, resumed.epoch);
   assert.equal(requests, 1);
   registry.close();
+});
+
+
+test('maximum command timeout returns monitored TIMEOUT within the observation margin', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const registry = new WindowRegistry(), windowId = randomUUID();
+  let request: any, settled = false;
+  registry.register({ type: 'register', protocol: 1, windowId, metadata: {}, capabilities: ['exec_command'],
+    snapshot: { tabs: [], sessions: [], profiles: [], transfers: [] } }, message => {
+    if (message.type !== 'request') return;
+    request = wireMessageSchema.parse(message);
+    setTimeout(() => registry.receive(windowId, message.epoch, { type: 'response', id: message.id, windowId,
+      epoch: message.epoch, result: { success: false, error: 'TIMEOUT', outcomeUnknown: true, stillMonitored: true } }), 301000);
+  });
+  try {
+    const pending = registry.call('exec_command', { windowId, command: 'slow', timeout: 300000 }, LOCAL_PRINCIPAL)
+      .then(result => { settled = true; return result; });
+    assert.equal(request.timeoutMs, MAX_REQUEST_TIMEOUT_MS);
+    assert.equal(wireMessageSchema.safeParse({ ...request, timeoutMs: MAX_REQUEST_TIMEOUT_MS + 1 }).success, false);
+    t.mock.timers.tick(300000); await Promise.resolve();
+    assert.equal(settled, false);
+    t.mock.timers.tick(1000);
+    assert.deepEqual(await pending, { success: false, error: 'TIMEOUT', outcomeUnknown: true, stillMonitored: true });
+  } finally { registry.close(); }
 });

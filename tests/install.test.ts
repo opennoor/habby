@@ -139,3 +139,24 @@ test('Windows installer selects supported architectures and rejects unsupported 
     child.stdin!.end(source);
   });
 });
+
+
+test('Unix supervisor upgrades repair existing writable units and plists', { skip: process.platform === 'win32' }, async t => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-supervisor-upgrade-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const source = path.join(tmp, 'source'); await mkdir(path.join(source, 'dist'), { recursive: true });
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite' }));
+  await writeFile(path.join(source, 'dist', 'index.js'), 'plugin');
+  const stateDir = path.join(tmp, 'state'); await mkdir(stateDir);
+  await writeFile(path.join(stateDir, 'satellite.json'), '{}', { mode: 0o600 });
+  for (const platform of ['linux', 'darwin'] as const) {
+    const options = { config: { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, platform,
+      home: tmp, env: {}, pluginSource: source, pluginDir: path.join(tmp, platform, 'plugins'), start: false, exec: async () => {} };
+    const installed = await installHub(options);
+    await chmod(installed.servicePath, 0o666);
+    await installHub({ ...options, start: true, exec: async () => {
+      assert.equal((await stat(installed.servicePath)).mode & 0o777, 0o600, platform);
+    } });
+    assert.equal((await stat(installed.servicePath)).mode & 0o777, 0o600, platform);
+  }
+});

@@ -153,7 +153,7 @@ test('pinned WSS satellite enforces scopes, caches mutations once, and rejects s
         const [registration] = await timeout(once(peer, 'message'));
         const registered = JSON.parse(registration.toString());
         assert.equal(registered.protocol, 1); assert.equal(registered.windowId, client.windowId);
-        peer.send(JSON.stringify({ type: 'registered', windowId: client.windowId, epoch: 'test-epoch', resumeToken: 'resume' }));
+        peer.send(JSON.stringify({ type: 'registered', windowId: client.windowId, epoch: 'test-epoch', resumeToken: registered.resumeToken }));
         const send = async (id: string, scopes: string[], epoch = 'test-epoch') => {
             const received = response(id);
             peer.send(JSON.stringify({ type: 'request', id, windowId: client.windowId, epoch, operation: 'exec_command', params: { command: 'true' }, timeoutMs: 1000, principal: { id: 'agent', scopes } }));
@@ -378,4 +378,99 @@ test('monitored execution rejects a second command and retains timed-out ownersh
     for (const byte of bytes) binary.next(Buffer.from([byte]));
     assert.equal(JSON.parse((await next).content[0].text).output, 'héllo');
     binary.complete(); output.complete(); terminal.destroyed.complete();
+});
+
+import { WindowRegistry } from '../packages/hub/src/registry.ts';
+import * as protocol from '../shared/protocol.ts';
+import * as catalog from '../shared/catalog.ts';
+
+test('lost first registration acknowledgement reconnects without surrendering window ownership', async () => {
+    const f = await tlsFixture(), registry = new WindowRegistry();
+    let registrations = 0, firstToken: string | undefined;
+    let connectedPoll: ReturnType<typeof setInterval> | undefined;
+    let recover!: () => void, fail!: (error: unknown) => void;
+    const recovered = new Promise<void>((resolve, reject) => { recover = resolve; fail = reject; });
+    f.sockets.on('connection', peer => peer.on('message', data => {
+        try {
+            const message = protocol.wireMessageSchema.parse(JSON.parse(data.toString()));
+            if (message.type !== 'register') return;
+            const bound = registry.register(message, outbound => peer.send(JSON.stringify(outbound)));
+            assert.equal(bound.resumeToken, message.resumeToken);
+            peer.once('close', () => registry.disconnect(message.windowId, bound.epoch));
+            assert.throws(() => registry.register(message, () => {}), { code: 'DUPLICATE_WINDOW' });
+            if (++registrations === 1) {
+                firstToken = message.resumeToken;
+                assert.match(firstToken!, /^[A-Za-z0-9_-]{43}$/);
+                assert.equal(protocol.registerSchema.safeParse({ ...message, resumeToken: 'weak' }).success, false);
+                assert.equal(protocol.wireMessageSchema.safeParse({ type: 'registered', windowId: message.windowId,
+                    epoch: bound.epoch, resumeToken: 'weak' }).success, false);
+                // Commit registration, but discard its acknowledgement before the client learns an epoch.
+                peer.once('close', () => {
+                    assert.throws(() => registry.register({ ...message, resumeToken: 'z'.repeat(43) }, () => {}), { code: 'INVALID_RESUME' });
+                    assert.throws(() => registry.register({ ...message, resumeToken: undefined }, () => {}), { code: 'INVALID_RESUME' });
+                });
+                peer.close();
+            } else {
+                assert.equal(message.resumeToken, firstToken);
+                peer.send(JSON.stringify({ type: 'registered', windowId: message.windowId, ...bound }));
+                recover();
+            }
+        } catch (error) { fail(error); }
+    }));
+    const client = new SatelliteClient(() => ({ url: f.url, certificate: f.certificate.cert, spkiPin: f.pin, credential: 'x'.repeat(64) }), {
+        capabilities: () => [], snapshot: async () => ({ tabs: [], sessions: [], profiles: [], transfers: [] }), run: async () => {},
+    });
+    try {
+        client.start(); await timeout(recovered);
+        await timeout(new Promise<void>(resolve => {
+            connectedPoll = setInterval(() => { if (client.status === 'connected') resolve(); }, 10);
+        }));
+        assert.equal(registrations, 2);
+        assert.equal((registry.list(protocol.LOCAL_PRINCIPAL)[0] as any).online, true);
+    } finally {
+        clearInterval(connectedPoll); client.stop(); registry.close();
+        for (const peer of f.sockets.clients) peer.terminate();
+        await new Promise<void>(resolve => f.sockets.close(() => resolve()));
+        await new Promise<void>(resolve => f.server.close(() => resolve()));
+    }
+});
+
+test('production SatelliteService rejects conflicting exact selectors before selecting or invoking', async () => {
+    const source = readFileSync(new URL('../packages/satellite/src/satellite.service.ts', import.meta.url), 'utf8');
+    const output = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
+        experimentalDecorators: true, esModuleInterop: true } }).outputText;
+    const module = { exports: {} as any }, require = createRequire(import.meta.url);
+    const injected: Record<string, unknown> = {
+        '@angular/core': { Injectable: () => (value: unknown) => value, Inject: () => () => {} },
+        'tabby-core': { BOOTSTRAP_DATA: {} }, '../../../shared/catalog': catalog, '../../../shared/protocol': protocol,
+        '../../../shared/paths': { defaultStateDir: () => '' }, './runtime': runtime,
+        './client': { SatelliteClient: class { windowId = '00000000-0000-4000-8000-000000000001'; stop() {} } },
+        './request-context': { requestContext: { run: (_signal: unknown, callback: () => unknown) => callback() } },
+        './tools/terminal': {}, './tools/tabManagement': {}, './tools/sftp': {},
+    };
+    vm.runInNewContext(output, { module, exports: module.exports, require: (key: string) => key in injected ? injected[key] : require(key),
+        console, Buffer, process, setTimeout, clearTimeout }, { filename: 'satellite.service.ts' });
+    const selected: any[] = [], invoked: any[] = [], focused: any[] = [];
+    const a = {}, b = { focus: (pane: unknown) => focused.push(pane) }, pane = {};
+    const session = { sessionId: 'pane-b', tabParent: b, tab: pane, isSplit: true, isFocusedPane: true };
+    const app = { tabs: [a, b], selectTab: (tab: unknown) => selected.push(tab) };
+    const handler = async (params: any) => { invoked.push(params); return { success: true }; };
+    const terminal = { mcpTools: [{ name: 'exec_command', handler }], findTerminalSessions: () => [session],
+        findSessionByLocator: ({ sessionId }: any) => sessionId === 'pane-b' ? session : null };
+    const tabs = { mcpTools: [{ name: 'split_tab', handler }], findTabByLocator: ({ tabId }: any) => tabId === 'tab-a' ? a : tabId === 'tab-b' ? b : null };
+    const service = new module.exports.SatelliteService(app, { store: {} }, { run: (callback: () => unknown) => callback() },
+        terminal, tabs, { mcpTools: [] }, { windowID: 1 });
+    const signal = new AbortController().signal;
+    try {
+        for (const [operation, params] of [['split_tab', { direction: 'right' }], ['exec_command', { command: 'true' }]] as const) {
+            await assert.rejects(service.run(operation, { ...params, tabId: 'tab-a', sessionId: 'pane-b' }, protocol.LOCAL_PRINCIPAL, signal), { code: 'TARGET_CONFLICT' });
+        }
+        await assert.rejects(service.run('split_tab', { direction: 'right', tabId: 'tab-a', sessionId: 'gone' }, protocol.LOCAL_PRINCIPAL, signal), { code: 'TARGET_GONE' });
+        assert.equal(selected.length, 0); assert.equal(focused.length, 0); assert.equal(invoked.length, 0);
+        await service.run('split_tab', { direction: 'right', tabId: 'tab-b', sessionId: 'pane-b' }, protocol.LOCAL_PRINCIPAL, signal);
+        assert.ok(selected.length > 0); assert.ok(selected.every(tab => tab === b)); assert.deepEqual(focused, [pane]);
+        assert.equal(invoked[0].tabIndex, 1);
+        await service.run('exec_command', { command: 'true', tabId: 'tab-b', sessionId: 'pane-b' }, protocol.LOCAL_PRINCIPAL, signal);
+        assert.equal(invoked[1].sessionId, 'pane-b');
+    } finally { service.ngOnDestroy(); }
 });

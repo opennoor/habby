@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { access, mkdir, readFile, writeFile, cp, rename, rm, lstat } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile, cp, rename, rm, lstat, chmod } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,6 +84,7 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
   await mkdir(path.dirname(target), { recursive: true });
   const content = renderSupervisor(platform, options.executable ?? process.execPath, options.entrypoint ?? fileURLToPath(new URL('./cli.js', import.meta.url)), config.stateDir);
   await writeFile(target, platform === 'win32' ? Buffer.from('\uFEFF' + content, 'utf16le') : content, { mode: 0o600 });
+  if (platform !== 'win32') await chmod(target, 0o600);
   const start = options.start !== false;
   if (platform === 'linux') {
     await exec('systemctl', ['--user', 'daemon-reload']);
