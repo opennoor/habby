@@ -5,14 +5,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { initializeState } from '../packages/hub/src/state.js';
+import { initializeState, privateDirectory } from '../packages/hub/src/state.js';
 import { openStore } from '../packages/hub/src/auth/store.js';
 import { doctor, installHub } from '../packages/hub/src/install.js';
 
 test('native Windows state replaces unsafe explicit ACLs before writing secrets', { skip: process.platform !== 'win32' }, async t => {
-  const stateDir = await mkdtemp(join(process.env.TABBY_HUB_NATIVE_TEST_ROOT ?? tmpdir(), 'tabby-state-acl-'));
+  const parent = await mkdtemp(join(process.env.TABBY_HUB_NATIVE_TEST_ROOT ?? tmpdir(), 'tabby-state-acl-'));
+  await privateDirectory(parent);
+  const stateDir = join(parent, 'state');
   let preserveForProbe = false;
-  t.after(() => preserveForProbe ? undefined : rm(stateDir, { recursive: true, force: true }));
+  t.after(() => preserveForProbe ? undefined : rm(parent, { recursive: true, force: true }));
   const execute = promisify(execFile);
   const powershell = async (script: string) => JSON.parse((await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from("$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules'); " + script, 'utf16le').toString('base64')],
     { env: { ...process.env, TABBY_HUB_PRIVATE_STATE_DIR: stateDir } })).stdout);
@@ -29,6 +31,34 @@ test('native Windows state replaces unsafe explicit ACLs before writing secrets'
     for (const name of ['auth.sqlite', 'auth.sqlite-wal', 'auth.sqlite-shm'])
       assert.equal(storageChecks.find(check => check.name === name)?.ok, true, `${name}: fresh live database files must be private`);
   } finally { freshStore.close(); }
+  // Each inventoried path can have owner-only current ACEs but still inherit
+  // future parent grants. Diagnosis must reject it without changing its SDDL.
+  const inheritable = ['state-directory', 'config.json', 'satellite.json', 'secrets.json', 'auth.sqlite'];
+  await powershell(`$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+    foreach($name in @('config.json','satellite.json','secrets.json','auth.sqlite')) {
+      $file=Join-Path $env:TABBY_HUB_PRIVATE_STATE_DIR $name
+      $acl=New-Object Security.AccessControl.FileSecurity; $acl.SetOwner($sid)
+      $acl.SetAccessRuleProtection($false,$false)
+      $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow')))
+      [IO.File]::SetAccessControl($file,$acl)
+    }
+    $acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($false,$false)
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
+    [IO.Directory]::SetAccessControl($env:TABBY_HUB_PRIVATE_STATE_DIR,$acl)
+    ConvertTo-Json -Compress -InputObject @(@('','config.json','satellite.json','secrets.json','auth.sqlite') | ForEach-Object {
+      $acl=Get-Acl -LiteralPath (Join-Path $env:TABBY_HUB_PRIVATE_STATE_DIR $_)
+      if($acl.AreAccessRulesProtected) { throw 'Fixture must allow inheritance.' }
+      foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+        if($rule.IdentityReference.Value -ne $sid.Value) { throw 'Fixture must currently grant only its owner.' }
+      }; $acl.Sddl
+    })`).then(async before => {
+      const checks = await doctor({ ...state.config, trustedPort: 1 });
+      for (const name of inheritable) assert.equal(checks.find(check => check.name === name)?.ok, false, `${name}: inheritance-enabled ACL must fail`);
+      const after = await powershell(`ConvertTo-Json -Compress -InputObject @(@('','config.json','satellite.json','secrets.json','auth.sqlite') | ForEach-Object {
+        (Get-Acl -LiteralPath (Join-Path $env:TABBY_HUB_PRIVATE_STATE_DIR $_)).Sddl})`);
+      assert.deepEqual(after, before, 'Doctor must not protect ACLs while diagnosing them.');
+    });
+  await initializeState(stateDir);
   const original = await readFile(join(stateDir, 'secrets.json'), 'utf8');
   await execute('icacls.exe', [stateDir, '/grant', '*S-1-1-0:(OI)(CI)R']);
   const files = ['config.json', 'satellite.json', 'secrets.json', 'auth.sqlite', 'installation.json', 'task.xml', 'hub.stderr.log'];
@@ -77,7 +107,7 @@ test('native Windows state replaces unsafe explicit ACLs before writing secrets'
   for (const name of ['state-directory', ...files]) assert.equal(privateChecks.find(check => check.name === name)?.ok, true, `${name}: doctor must recognize repaired private ACLs`);
   assert.ok(JSON.parse(await readFile(join(stateDir, 'secrets.json'), 'utf8')).credential);
   if (process.env.TABBY_HUB_ACL_PROBE_MANIFEST) {
-    await writeFile(process.env.TABBY_HUB_ACL_PROBE_MANIFEST, JSON.stringify({ stateDir, file: join(stateDir, 'secrets.json'), database: join(stateDir, 'auth.sqlite'), files: files.map(file => join(stateDir, file)) }));
+    await writeFile(process.env.TABBY_HUB_ACL_PROBE_MANIFEST, JSON.stringify({ stateDir, cleanupDir: parent, file: join(stateDir, 'secrets.json'), database: join(stateDir, 'auth.sqlite'), files: files.map(file => join(stateDir, file)) }));
     preserveForProbe = true;
   }
 });

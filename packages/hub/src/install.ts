@@ -9,7 +9,7 @@ import { PRIVATE_STATE_FILES, privateDirectory, writePrivateFile, writePrivateJs
 
 type Platform = 'linux' | 'darwin' | 'win32';
 type Exec = (file: string, args: string[]) => Promise<unknown>;
-const execute: Exec = (file, args) => promisify(execFile)(file, args, { windowsHide: true, timeout: 30000 });
+const execute: Exec = (file, args) => promisify(execFile)(file, args, { windowsHide: true, timeout: 30000, env: { ...process.env, LC_ALL: 'C' } });
 const PLUGIN = 'tabby-hub-satellite';
 const SERVICE = 'tabby-hub';
 const exists = async (p: string) => { try { await access(p); return true; } catch { return false; } };
@@ -116,13 +116,40 @@ export async function uninstallHub(config: HubConfig, options: Omit<InstallOptio
   const resolvedState = path.resolve(config.stateDir);
   if (options.purge && (resolvedState === path.parse(resolvedState).root || resolvedState === path.resolve(home))) throw new Error('Refusing to purge a root or home directory.');
   const target = servicePath(platform, home, config.stateDir, env);
-  if (await exists(target)) {
-    if (platform === 'linux') await exec('systemctl', ['--user', 'disable', '--now', `${SERVICE}.service`]);
-    else if (platform === 'darwin') { try { await exec('launchctl', ['bootout', `gui/${process.getuid!()}/com.tabby-hub.mcp`]); } catch { /* already stopped */ } }
-    else await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $task=Get-ScheduledTask -TaskName ${psQuote(taskName(env))} -ErrorAction SilentlyContinue; if ($task) { $task | Stop-ScheduledTask; $task | Unregister-ScheduledTask -Confirm:$false }`]);
-    await rm(target);
-    if (platform === 'linux') await exec('systemctl', ['--user', 'daemon-reload']);
+  // Runtime registration can outlive a deleted or corrupt definition file.
+  if (platform === 'linux') {
+    try { await exec('systemctl', ['--user', 'stop', `${SERVICE}.service`]); }
+    catch (error) { if ((error as { code?: number }).code !== 5) throw error; } // LSB: unit not installed
+    // disable removes dangling enablement links even when the unit file is gone.
+    try { await exec('systemctl', ['--user', 'disable', `${SERVICE}.service`]); }
+    catch (error) {
+      const failure = error as { code?: number; stderr?: string };
+      const diagnostics = failure.stderr?.trim().split('\n').filter(line => !line.startsWith('Removed '));
+      const missing = [`Failed to disable unit: Unit ${SERVICE}.service does not exist`,
+        `Failed to disable unit: Unit file ${SERVICE}.service does not exist.`];
+      // execute uses C locale. Accept only this exact missing-unit receipt;
+      // permission/connectivity errors (even alongside it) must abort removal.
+      if (failure.code !== 1 || !diagnostics?.length || diagnostics.some(line => !missing.includes(line))) throw error;
+    }
+  } else if (platform === 'darwin') {
+    try { await exec('launchctl', ['bootout', `gui/${process.getuid!()}/com.tabby-hub.mcp`]); }
+    catch (error) { if ((error as { code?: number }).code !== 3) throw error; } // ESRCH: no such service
+  } else {
+    await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules');
+      $scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\\'); $task=$null
+      try { $task=$folder.GetTask(${psQuote(taskName(env))}) }
+      catch { $cause=$_.Exception; while($cause.InnerException) { $cause=$cause.InnerException }; if($cause.HResult -ne -2147024894) { throw } }
+      if($task) {
+        $task.Stop(0); $deadline=[DateTime]::UtcNow.AddSeconds(10)
+        while($task.GetInstances(0).Count -gt 0) {
+          if([DateTime]::UtcNow -ge $deadline) { throw 'Scheduled task instances did not stop; installation retained.' }
+          Start-Sleep -Milliseconds 100
+        }
+        $folder.DeleteTask(${psQuote(taskName(env))},0)
+      }`]);
   }
+  if (await exists(target)) await rm(target);
+  if (platform === 'linux') await exec('systemctl', ['--user', 'daemon-reload']);
   await rm(destination, { recursive: true, force: true });
   await rm(path.join(config.stateDir, 'installation.json'), { force: true });
   if (options.purge) {
@@ -148,7 +175,7 @@ export async function doctor(config: HubConfig): Promise<Array<{ name: string; o
           if($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Links are not private state.' }
           $acl=$item.GetAccessControl([Security.AccessControl.AccessControlSections]'Access,Owner')
           $rules=$acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])
-          $ok=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq $sid.Value -and $rules.Count -gt 0
+          $ok=$acl.AreAccessRulesProtected -and $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq $sid.Value -and $rules.Count -gt 0
           foreach($rule in $rules) { if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -ne $sid.Value) { $ok=$false } }
         } catch { $ok=$false }
         $result[$path]=$ok

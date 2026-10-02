@@ -70,7 +70,7 @@ exit 0
 } finally {
   try {
     if (Test-Path -LiteralPath $manifestPath) {
-      $cleanup = '$ErrorActionPreference="Stop"; $manifest=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "probe.json") | ConvertFrom-Json; Remove-Item -LiteralPath $manifest.stateDir -Recurse -Force'
+      $cleanup = '$ErrorActionPreference="Stop"; $manifest=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "probe.json") | ConvertFrom-Json; if([string]::IsNullOrWhiteSpace($manifest.cleanupDir)) { throw "Missing fixture cleanup directory." }; Remove-Item -LiteralPath $manifest.cleanupDir -Recurse -Force; if(Test-Path -LiteralPath $manifest.cleanupDir) { throw "Fixture cleanup incomplete." }'
       $cleanupPath = Join-Path $testRoot 'cleanup.ps1'
       Set-Content -LiteralPath $cleanupPath -Value $cleanup -Encoding UTF8
       Invoke-StandardUser $user $powershell "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cleanupPath`"" 'cleanup'

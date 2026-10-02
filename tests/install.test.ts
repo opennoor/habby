@@ -226,3 +226,115 @@ test('Unix installer replaces private control records and supervisor links witho
   assert.equal((await stat(path.join(stateDir, 'installation.json'))).mode & 0o777, 0o600);
   assert.equal((await stat(stateDir)).mode & 0o777, 0o700);
 });
+
+test('uninstall stops and deregisters missing definitions before removing plugin or state', async t => {
+  for (const platform of ['linux', 'darwin', 'win32'] as const) {
+    if (platform === 'darwin' && !process.getuid) continue; // macOS/Linux CI cover the native UID domain.
+    for (const scenario of ['registered', 'absent', 'failure'] as const) {
+      const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-uninstall-'));
+      t.after(() => rm(home, { recursive: true, force: true }));
+      const stateDir = path.join(home, 'state'), pluginDir = path.join(home, 'plugins');
+      const destination = path.join(pluginDir, 'node_modules', 'tabby-hub-satellite');
+      await mkdir(destination, { recursive: true }); await mkdir(stateDir);
+      await writeFile(path.join(destination, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite' }));
+      await writeFile(path.join(stateDir, 'secrets.json'), 'retain on failure');
+      const calls: Array<[string, string[]]> = [];
+      const options = { platform, home, pluginDir, env: { USERNAME: 'fixture' }, purge: true,
+        exec: async (file: string, args: string[]) => {
+          await access(destination); await access(stateDir); // Deregistration must precede destructive cleanup.
+          calls.push([file, args]);
+          if (scenario === 'failure') throw Object.assign(new Error('supervisor access denied'), { code: 1, stderr: 'Permission denied' });
+          if (scenario === 'absent' && platform !== 'win32') {
+            if (args.includes('stop')) throw Object.assign(new Error('not installed'), { code: 5 });
+            if (args.includes('disable')) throw Object.assign(new Error('not installed'), { code: 1, stderr: "Failed to disable unit: Unit tabby-hub.service does not exist\nRemoved '/fixture/default.target.wants/tabby-hub.service'.\n" });
+            if (file === 'launchctl') throw Object.assign(new Error('no such service'), { code: 3 });
+          }
+        } };
+      const config = { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 };
+      if (scenario === 'failure') {
+        await assert.rejects(uninstallHub(config, options), /supervisor access denied/);
+        await access(destination); assert.equal(await readFile(path.join(stateDir, 'secrets.json'), 'utf8'), 'retain on failure');
+      } else {
+        assert.equal((await uninstallHub(config, options)).statePurged, true);
+        await assert.rejects(access(destination)); await assert.rejects(access(stateDir));
+        if (platform === 'linux') assert.deepEqual(calls.map(([, args]) => args[1]), ['stop', 'disable', 'daemon-reload']);
+        if (platform === 'darwin') assert.equal(calls[0][1][0], 'bootout');
+        if (platform === 'win32') {
+          const command = calls[0][1].at(-1)!;
+          assert.match(command, /GetTask\('TabbyHubMCP-fixture'\)/);
+          assert.match(command, /HResult -ne -2147024894/);
+          assert.match(command, /\$task.Stop\(0\)/);
+          assert.match(command, /GetInstances\(0\).Count -gt 0/);
+          assert.match(command, /\$folder.DeleteTask/);
+          assert.doesNotMatch(command, /SilentlyContinue/);
+        }
+      }
+    }
+  }
+});
+
+test('missing Linux unit diagnostics do not hide disable permission or connectivity failures', async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-uninstall-error-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const stateDir = path.join(home, 'state'); await mkdir(stateDir); await writeFile(path.join(stateDir, 'keep'), 'keep');
+  const config = { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 };
+  for (const stderr of ['Permission denied', 'Failed to connect to bus', 'Failed to disable unit: Unit tabby-hub.service does not exist\nPermission denied']) {
+    await assert.rejects(uninstallHub(config, { platform: 'linux', home, env: {}, purge: true, exec: async (_file, args) => {
+      if (args.includes('disable')) throw Object.assign(new Error('disable failed'), { code: 1, stderr });
+    } }), /disable failed/);
+    assert.equal(await readFile(path.join(stateDir, 'keep'), 'utf8'), 'keep');
+  }
+});
+
+test('native Windows uninstall recognizes a genuinely unregistered task', { skip: process.platform !== 'win32' }, async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-uninstall-native-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const stateDir = path.join(home, 'state'); await mkdir(stateDir);
+  await uninstallHub({ stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, {
+    platform: 'win32', home, env: { APPDATA: home, USERNAME: `absent-${Date.now()}-${process.pid}` }, purge: true,
+  });
+  await assert.rejects(access(stateDir));
+});
+
+
+test('Windows deregistration script distinguishes missing, denied and still-running tasks', async t => {
+  const execute = promisify(execFile);
+  try { await execute('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']); }
+  catch { t.skip('PowerShell runtime unavailable on this host'); return; }
+  const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-task-script-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const stateDir = path.join(home, 'state'); await mkdir(stateDir);
+  let command = '';
+  await uninstallHub({ stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, {
+    platform: 'win32', home, env: {}, exec: async (_file, args) => { command = args.at(-1)!; },
+  });
+  for (const scenario of ['absent', 'denied', 'running', 'stopped']) {
+    const fixture = `
+      $scenario='${scenario}'; $events=[Collections.Generic.List[string]]::new()
+      $fixtureTask=[pscustomobject]@{}
+      $fixtureTask | Add-Member ScriptMethod Stop { param($flags) $events.Add('stop') }
+      $fixtureTask | Add-Member ScriptMethod GetInstances { param($flags) @{Count=[int]($scenario -eq 'running')} }
+      $folder=[pscustomobject]@{}
+      $folder | Add-Member ScriptMethod GetTask { param($name)
+        if($scenario -eq 'absent') { throw [Runtime.InteropServices.COMException]::new('missing',-2147024894) }
+        if($scenario -eq 'denied') { throw [Runtime.InteropServices.COMException]::new('denied',-2147024891) }
+        return $fixtureTask
+      }
+      $folder | Add-Member ScriptMethod DeleteTask { param($name,$flags) $events.Add('delete') }
+      $schedulerFixture=[pscustomobject]@{}
+      $schedulerFixture | Add-Member ScriptMethod Connect {}
+      $schedulerFixture | Add-Member ScriptMethod GetFolder { param($path) return $folder }
+      function New-Object { param($ComObject) return $schedulerFixture }
+      try {
+        ${command.replace('AddSeconds(10)', 'AddSeconds(0)')}
+        ConvertTo-Json -Compress -InputObject @{events=@($events); error=$null}
+      } catch { ConvertTo-Json -Compress -InputObject @{events=@($events); error=$_.Exception.Message} }
+    `;
+    const { stdout } = await execute('pwsh', ['-NoProfile', '-NonInteractive', '-Command', fixture]);
+    const result = JSON.parse(stdout);
+    if (scenario === 'stopped') { assert.deepEqual(result.events, ['stop', 'delete']); assert.equal(result.error, null); }
+    if (scenario === 'absent') { assert.deepEqual(result.events, []); assert.equal(result.error, null); }
+    if (scenario === 'denied') { assert.deepEqual(result.events, []); assert.match(result.error, /denied/); }
+    if (scenario === 'running') { assert.deepEqual(result.events, ['stop']); assert.match(result.error, /instances did not stop/); }
+  }
+});
