@@ -48,8 +48,8 @@ test('text writes close the remote SFTP handle on success and failure', async ()
         if (fails) assert.equal(result.error, 'remote write failed');
     }
 });
-function category(backend?: any, timeout = 30) {
-    const tool = new SFTPToolCategory({}, { store: { mcp: { sftp: { timeout } } } }, logger, {}, {});
+function category(backend?: any, timeout = 30, Category = SFTPToolCategory) {
+    const tool = new Category({}, { store: { mcp: { sftp: { timeout } } } }, logger, {}, {});
     tool.findSSHSession = () => ({ sessionId: 'pane', tab: { title: 'test', sshSession: { open: true } } });
     tool.getSFTPSession = async () => backend;
     return tool;
@@ -250,4 +250,84 @@ test('interrupted opaque uploads report unknown outcomes before a late remote co
             } finally { release(); await settled; }
         });
     }
+});
+
+test('uploads and downloads share capacity through cancelled or unknown backend lifetimes', { timeout: 5000 }, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { SFTPToolCategory: TimedCategory } = loadSftp();
+    const decode = (response: any) => JSON.parse(response.content[0].text);
+    const gates: Array<{ resolve: () => void; reject: (error: Error) => void; promise: Promise<void> }> = [];
+    t.after(async () => {
+        for (const gate of gates) gate.resolve();
+        await Promise.allSettled(gates.map(gate => gate.promise));
+        await new Promise(resolve => setImmediate(resolve));
+    });
+    const { directory, destination } = fixture(t);
+    let uploads = 0, downloads = 0, stats = 0, ready = 0;
+    let enteredAll!: () => void;
+    const allEntered = new Promise<void>(resolve => { enteredAll = resolve; });
+    const entered = () => { if (++ready === 16) enteredAll(); };
+    const defer = () => {
+        let resolve!: () => void, reject!: (error: Error) => void;
+        const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+        const gate = { resolve, reject, promise }; gates.push(gate); return gate;
+    };
+    const tools = category({
+        stat: async () => { stats++; return { size: 4 }; },
+        upload: async (_: string, stream: any) => {
+            uploads++; const gate = defer(); await stream.read(); await stream.read(); entered();
+            await gate.promise; stream.close();
+        },
+        download: async (_: string, stream: any) => {
+            downloads++; const gate = defer(); await stream.write(Buffer.from('a')); entered();
+            await gate.promise; await stream.write(Buffer.from('bcd')); stream.close();
+        },
+    }, 20, TimedCategory);
+    const invoke = (name: string, params: any) => tools.mcpTools.find((tool: any) => tool.name === name).handler(params);
+    for (let i = 0; i < 16; i++) {
+        const response = decode(await invoke(i % 2 ? 'sftp_download' : 'sftp_upload', {
+            localPath: i % 2 ? path.join(directory, `download-${i}`) : destination, remotePath: '/file', sync: false,
+        }));
+        assert.equal(response.async, true);
+    }
+    await allEntered;
+    assert.equal(ready, 16); // All real reads/writes reached the backend barrier before virtual timeout.
+    assert.equal(uploads, 8); assert.equal(downloads, 8); assert.equal(stats, 8);
+    const before = fs.readdirSync(directory);
+    const denied = decode(await invoke('sftp_download', { remotePath: '/denied', localPath: path.join(directory, 'rejected', 'file'), sync: false }));
+    assert.equal(denied.code, 'TRANSFER_CAPACITY'); assert.equal(stats, 8); assert.equal(downloads, 8);
+    assert.equal(tools.getTransfers().length, 16); assert.deepEqual(fs.readdirSync(directory), before);
+    tools.cancelTransferById(tools.getTransfers()[0].id);
+    t.mock.timers.tick(20);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(tools.getTransfers().filter((task: any) => task.status === 'unknown').length, 8);
+    assert.equal(tools.getTransfers().filter((task: any) => task.status === 'failed').length, 8);
+    tools.clearCompletedTransfers(); assert.equal(tools.getTransfers().length, 0);
+    assert.equal(decode(await invoke('sftp_upload', { localPath: destination, remotePath: '/still-live', sync: false })).code, 'TRANSFER_CAPACITY');
+    assert.equal(uploads, 8); assert.equal(tools.activeTransfers, 16);
+    // An opaque upload can succeed late; a rejected download backend also frees its slot.
+    gates[0].resolve(); gates[1].reject(new Error('backend stopped'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(tools.activeTransfers, 14);
+    for (const kind of ['sftp_upload', 'sftp_download']) {
+        assert.equal(decode(await invoke(kind, { localPath: kind === 'sftp_upload' ? destination : path.join(directory, 'replacement'), remotePath: '/new', sync: false })).async, true);
+    }
+    assert.equal(tools.activeTransfers, 16);
+    assert.equal(decode(await invoke('sftp_upload', { localPath: destination, remotePath: '/full', sync: false })).code, 'TRANSFER_CAPACITY');
+});
+
+test('failed transfer preflight releases capacity without inserting history or opening files', async t => {
+    const { directory } = fixture(t);
+    const tools = category({ stat: async () => { throw new Error('stat failed'); } });
+    for (let i = 0; i < 20; i++) {
+        for (const name of ['sftp_upload', 'sftp_download']) {
+            const result = JSON.parse((await tools.mcpTools.find((tool: any) => tool.name === name).handler({
+                localPath: path.join(directory, 'missing'), remotePath: '/file', sync: false,
+            })).content[0].text);
+            assert.equal(result.success, false); assert.notEqual(result.code, 'TRANSFER_CAPACITY');
+            await new Promise(resolve => setImmediate(resolve));
+        }
+    }
+    assert.equal(tools.activeTransfers, 0); assert.equal(tools.getTransfers().length, 0);
+    assert.deepEqual(fs.readdirSync(directory), ['existing']);
 });

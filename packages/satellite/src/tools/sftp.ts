@@ -78,6 +78,19 @@ export class SFTPToolCategory extends BaseToolCategory {
     private _transferTasksSubject = new BehaviorSubject<TransferTask[]>([]);
     public readonly transferTasks$ = this._transferTasksSubject.asObservable();
     private maxTransferHistory = 100;
+    private activeTransfers = 0;
+    private readonly maxActiveTransfers = 16;
+
+    private reserveTransfer(): (() => void) | undefined {
+        if (this.activeTransfers >= this.maxActiveTransfers) return undefined;
+        this.activeTransfers++;
+        return () => { this.activeTransfers--; };
+    }
+
+    private transferCapacityResponse() {
+        return { content: [{ type: 'text', text: JSON.stringify({ success: false,
+            code: 'TRANSFER_CAPACITY', error: 'Active transfer capacity reached. Wait for existing backends to finish.' }) }] };
+    }
 
     constructor(
         private app: AppService,
@@ -829,172 +842,185 @@ An interrupted upload can report OUTCOME_UNKNOWN: the remote backend may still c
                     return this.rejectedResponse('sftp_upload');
                 }
 
-                // Check local file exists
-                if (!fs.existsSync(params.localPath)) {
-                    this.logger.warn(`[sftp_upload] Local file not found: ${params.localPath}`);
-                    return {
-                        content: [{
-                            type: 'text', text: JSON.stringify({
-                                success: false, error: `Local file not found: ${params.localPath}`
-                            })
-                        }]
-                    };
-                }
-
-                const stats = fs.statSync(params.localPath);
-                const maxSize = this.config.store.mcp?.sftp?.maxUploadSize || 10 * 1024 * 1024;
-
-                if (stats.size > maxSize) {
-                    return {
-                        content: [{
-                            type: 'text', text: JSON.stringify({
-                                success: false,
-                                error: `File too large: ${stats.size} bytes (max: ${maxSize})`,
-                                hint: 'Increase max upload size in Settings → MCP → SFTP'
-                            })
-                        }]
-                    };
-                }
-
-                const transferId = this.generateTransferId();
-                const task: TransferTask = {
-                    id: transferId,
-                    type: 'upload',
-                    localPath: params.localPath,
-                    remotePath: params.remotePath,
-                    sessionId: session.sessionId,
-                    connectionName: session.tab.title || 'SSH Connection',
-                    status: 'pending',
-                    progress: 0,
-                    bytesTransferred: 0,
-                    totalBytes: stats.size,
-                    startTime: Date.now(),
-                    cancelRequested: false
-                };
-                this.transferTasks.set(transferId, task);
-                this._transferTasksSubject.next(Array.from(this.transferTasks.values()));
-                this.cleanupOldTransfers();
-
-                const sync = params.sync !== false;
-
-                const doUpload = async () => {
-                    if (this.isTransferCancelled(task)) {
-                        throw new Error('Transfer cancelled');
-                    }
-                    task.status = 'running';
-                    this.emitTransferUpdate();
-                    let fileUpload: StreamFileUpload | undefined;
-                    let uploadStarted = false;
-                    try {
-                        const sftpSession = await this.getSFTPSession(session.tab);
-                        if (!sftpSession) {
-                            throw new Error('Could not open SFTP session');
-                        }
-
-                        fileUpload = new StreamFileUpload(
-                            params.localPath,
-                            stats.size,
-                            (bytes: number) => {
-                                if (!this.isTransferCancelled(task)) {
-                                    task.bytesTransferred = bytes;
-                                    task.progress = Math.round((bytes / task.totalBytes) * 100);
-                                    task.speed = bytes / ((Date.now() - task.startTime) / 1000);
-                                }
-                            }
-                        );
-                        task.cancelCallback = () => {
-                            this.logger.warn(`[SFTP] Cancelling upload: ${transferId}`);
-                            if (uploadStarted) {
-                                task.status = 'unknown';
-                                task.error = 'Cancellation requested; remote upload outcome is unknown. Inspect the remote file before retrying.';
-                            }
-                            fileUpload?.cancel();
+                const release = this.reserveTransfer();
+                if (!release) return this.transferCapacityResponse();
+                let transferWork: Promise<void> | undefined;
+                let backendWork: Promise<unknown> | undefined;
+                try {
+                    // Check local file exists
+                    if (!fs.existsSync(params.localPath)) {
+                        this.logger.warn(`[sftp_upload] Local file not found: ${params.localPath}`);
+                        return {
+                            content: [{
+                                type: 'text', text: JSON.stringify({
+                                    success: false, error: `Local file not found: ${params.localPath}`
+                                })
+                            }]
                         };
-
-                        if (this.isTransferCancelled(task)) {
-                            fileUpload.cancel();
-                            throw new Error('Transfer cancelled');
-                        }
-
-                        const sshSession = (session.tab as any).sshSession;
-                        uploadStarted = true;
-                        const uploadPromise = sftpSession.upload(params.remotePath, fileUpload);
-                        const result = await this.waitForTransferComplete(uploadPromise, fileUpload, sshSession);
-
-                        if (this.isTransferCancelled(task)) {
-                            throw new Error('Transfer cancelled');
-                        }
-                        if (result === 'completed_via_polling') {
-                            this.logger.info('[sftp_upload] Transfer completed via polling fallback');
-                        }
-
-                        task.status = 'completed';
-                        task.progress = 100;
-                        task.bytesTransferred = task.totalBytes;
-                        task.endTime = Date.now();
-                        this.emitTransferUpdate();
-                    } catch (error: any) {
-                        if (uploadStarted) {
-                            // Tabby's opaque upload can still unlink/rename after its last read.
-                            task.status = 'unknown';
-                            task.error = `${error.message || String(error)}. Remote upload outcome is unknown; inspect the remote file before retrying.`;
-                        } else if (!this.isTransferCancelled(task)) {
-                            task.status = 'failed';
-                            task.error = error.message || String(error);
-                        }
-                        task.endTime = Date.now();
-                        this.emitTransferUpdate();
-                        fileUpload?.cancel();
-                        throw error;
-                    } finally {
-                        task.cancelCallback = undefined;
-                        fileUpload?.close();
                     }
-                };
 
-                if (sync) {
-                    try {
-                        await doUpload();
+                    const stats = fs.statSync(params.localPath);
+                    const maxSize = this.config.store.mcp?.sftp?.maxUploadSize || 10 * 1024 * 1024;
+
+                    if (stats.size > maxSize) {
+                        return {
+                            content: [{
+                                type: 'text', text: JSON.stringify({
+                                    success: false,
+                                    error: `File too large: ${stats.size} bytes (max: ${maxSize})`,
+                                    hint: 'Increase max upload size in Settings → MCP → SFTP'
+                                })
+                            }]
+                        };
+                    }
+
+                    const transferId = this.generateTransferId();
+                    const task: TransferTask = {
+                        id: transferId,
+                        type: 'upload',
+                        localPath: params.localPath,
+                        remotePath: params.remotePath,
+                        sessionId: session.sessionId,
+                        connectionName: session.tab.title || 'SSH Connection',
+                        status: 'pending',
+                        progress: 0,
+                        bytesTransferred: 0,
+                        totalBytes: stats.size,
+                        startTime: Date.now(),
+                        cancelRequested: false
+                    };
+                    this.transferTasks.set(transferId, task);
+                    this._transferTasksSubject.next(Array.from(this.transferTasks.values()));
+                    this.cleanupOldTransfers();
+
+                    const sync = params.sync !== false;
+
+                    const doUpload = async () => {
+                        if (this.isTransferCancelled(task)) {
+                            throw new Error('Transfer cancelled');
+                        }
+                        task.status = 'running';
+                        this.emitTransferUpdate();
+                        let fileUpload: StreamFileUpload | undefined;
+                        let uploadStarted = false;
+                        try {
+                            const sftpSession = await this.getSFTPSession(session.tab);
+                            if (!sftpSession) {
+                                throw new Error('Could not open SFTP session');
+                            }
+
+                            fileUpload = new StreamFileUpload(
+                                params.localPath,
+                                stats.size,
+                                (bytes: number) => {
+                                    if (!this.isTransferCancelled(task)) {
+                                        task.bytesTransferred = bytes;
+                                        task.progress = Math.round((bytes / task.totalBytes) * 100);
+                                        task.speed = bytes / ((Date.now() - task.startTime) / 1000);
+                                    }
+                                }
+                            );
+                            task.cancelCallback = () => {
+                                this.logger.warn(`[SFTP] Cancelling upload: ${transferId}`);
+                                if (uploadStarted) {
+                                    task.status = 'unknown';
+                                    task.error = 'Cancellation requested; remote upload outcome is unknown. Inspect the remote file before retrying.';
+                                }
+                                fileUpload?.cancel();
+                            };
+
+                            if (this.isTransferCancelled(task)) {
+                                fileUpload.cancel();
+                                throw new Error('Transfer cancelled');
+                            }
+
+                            const sshSession = (session.tab as any).sshSession;
+                            uploadStarted = true;
+                            const uploadPromise = sftpSession.upload(params.remotePath, fileUpload);
+                            backendWork = uploadPromise;
+                            const result = await this.waitForTransferComplete(uploadPromise, fileUpload, sshSession);
+
+                            if (this.isTransferCancelled(task)) {
+                                throw new Error('Transfer cancelled');
+                            }
+                            if (result === 'completed_via_polling') {
+                                this.logger.info('[sftp_upload] Transfer completed via polling fallback');
+                            }
+
+                            task.status = 'completed';
+                            task.progress = 100;
+                            task.bytesTransferred = task.totalBytes;
+                            task.endTime = Date.now();
+                            this.emitTransferUpdate();
+                        } catch (error: any) {
+                            if (uploadStarted) {
+                                // Tabby's opaque upload can still unlink/rename after its last read.
+                                task.status = 'unknown';
+                                task.error = `${error.message || String(error)}. Remote upload outcome is unknown; inspect the remote file before retrying.`;
+                            } else if (!this.isTransferCancelled(task)) {
+                                task.status = 'failed';
+                                task.error = error.message || String(error);
+                            }
+                            task.endTime = Date.now();
+                            this.emitTransferUpdate();
+                            fileUpload?.cancel();
+                            throw error;
+                        } finally {
+                            task.cancelCallback = undefined;
+                            fileUpload?.close();
+                        }
+                    };
+
+                    transferWork = doUpload();
+                    if (sync) {
+                        try {
+                            await transferWork;
+                            return {
+                                content: [{
+                                    type: 'text', text: JSON.stringify({
+                                        success: true,
+                                        transferId,
+                                        localPath: params.localPath,
+                                        remotePath: params.remotePath,
+                                        bytesTransferred: task.bytesTransferred,
+                                        duration: task.endTime! - task.startTime
+                                    })
+                                }]
+                            };
+                        } catch (error: any) {
+                            return {
+                                content: [{
+                                    type: 'text', text: JSON.stringify({
+                                        success: false, transferId,
+                                        code: task.status === 'unknown' ? 'OUTCOME_UNKNOWN' : undefined,
+                                        error: task.error || error.message || String(error)
+                                    })
+                                }]
+                            };
+                        }
+                    } else {
+                        // Async mode - start upload in background
+                        transferWork.catch(e => {
+                            if (!this.isTransferCancelled(task)) {
+                                this.logger.error('Async upload failed:', e);
+                            }
+                        });
                         return {
                             content: [{
                                 type: 'text', text: JSON.stringify({
                                     success: true,
+                                    async: true,
                                     transferId,
-                                    localPath: params.localPath,
-                                    remotePath: params.remotePath,
-                                    bytesTransferred: task.bytesTransferred,
-                                    duration: task.endTime! - task.startTime
-                                })
-                            }]
-                        };
-                    } catch (error: any) {
-                        return {
-                            content: [{
-                                type: 'text', text: JSON.stringify({
-                                    success: false, transferId,
-                                    code: task.status === 'unknown' ? 'OUTCOME_UNKNOWN' : undefined,
-                                    error: task.error || error.message || String(error)
+                                    message: 'Upload started. Use sftp_get_transfer_status to check progress.'
                                 })
                             }]
                         };
                     }
-                } else {
-                    // Async mode - start upload in background
-                    doUpload().catch(e => {
-                        if (!this.isTransferCancelled(task)) {
-                            this.logger.error('Async upload failed:', e);
-                        }
-                    });
-                    return {
-                        content: [{
-                            type: 'text', text: JSON.stringify({
-                                success: true,
-                                async: true,
-                                transferId,
-                                message: 'Upload started. Use sftp_get_transfer_status to check progress.'
-                            })
-                        }]
-                    };
+                } finally {
+                    // Timeout/cancellation closes our adapter, but opaque backend I/O can
+                    // still settle later. Do not admit another transfer until that happens.
+                    void (transferWork ?? Promise.resolve()).catch(() => {}).then(() =>
+                        backendWork?.then(() => {}, () => {})).finally(release);
                 }
             }
         };
@@ -1035,171 +1061,184 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
                     return this.rejectedResponse('sftp_download');
                 }
 
+                const release = this.reserveTransfer();
+                if (!release) return this.transferCapacityResponse();
+                let transferWork: Promise<void> | undefined;
+                let backendWork: Promise<unknown> | undefined;
                 try {
-                    const sftp = await this.getSFTPSession(session.tab);
-                    checkRequest();
-                    if (!sftp) {
-                        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Could not open SFTP session' }) }] };
-                    }
-
-                    // Check remote file size
-                    let remoteStats;
                     try {
-                        remoteStats = await sftp.stat(params.remotePath);
-                    } catch (error: any) {
-                        if (error.code === 'ENOENT' || error.message?.includes('No such file')) {
+                        const sftp = await this.getSFTPSession(session.tab);
+                        checkRequest();
+                        if (!sftp) {
+                            return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Could not open SFTP session' }) }] };
+                        }
+
+                        // Check remote file size
+                        let remoteStats;
+                        try {
+                            remoteStats = await sftp.stat(params.remotePath);
+                        } catch (error: any) {
+                            if (error.code === 'ENOENT' || error.message?.includes('No such file')) {
+                                return {
+                                    content: [{
+                                        type: 'text', text: JSON.stringify({
+                                            success: false,
+                                            error: `Remote file not found: ${params.remotePath}`
+                                        })
+                                    }]
+                                };
+                            }
+                            throw error;
+                        }
+
+                        const maxSize = this.config.store.mcp?.sftp?.maxDownloadSize || 10 * 1024 * 1024;
+
+                        if (remoteStats.size > maxSize) {
                             return {
                                 content: [{
                                     type: 'text', text: JSON.stringify({
                                         success: false,
-                                        error: `Remote file not found: ${params.remotePath}`
+                                        error: `File too large: ${remoteStats.size} bytes (max: ${maxSize})`,
+                                        hint: 'Increase max download size in Settings → MCP → SFTP'
                                     })
                                 }]
                             };
                         }
-                        throw error;
-                    }
 
-                    const maxSize = this.config.store.mcp?.sftp?.maxDownloadSize || 10 * 1024 * 1024;
-
-                    if (remoteStats.size > maxSize) {
-                        return {
-                            content: [{
-                                type: 'text', text: JSON.stringify({
-                                    success: false,
-                                    error: `File too large: ${remoteStats.size} bytes (max: ${maxSize})`,
-                                    hint: 'Increase max download size in Settings → MCP → SFTP'
-                                })
-                            }]
-                        };
-                    }
-
-                    // Ensure local directory exists
-                    const localDir = path.dirname(params.localPath);
-                    if (!fs.existsSync(localDir)) {
-                        fs.mkdirSync(localDir, { recursive: true });
-                    }
-
-                    const transferId = this.generateTransferId();
-                    const task: TransferTask = {
-                        id: transferId,
-                        type: 'download',
-                        localPath: params.localPath,
-                        remotePath: params.remotePath,
-                        sessionId: session.sessionId,
-                        connectionName: session.tab.title || 'SSH Connection',
-                        status: 'pending',
-                        progress: 0,
-                        bytesTransferred: 0,
-                        totalBytes: remoteStats.size,
-                        startTime: Date.now(),
-                        cancelRequested: false
-                    };
-                    this.transferTasks.set(transferId, task);
-                    this._transferTasksSubject.next(Array.from(this.transferTasks.values()));
-                    this.cleanupOldTransfers();
-
-                    const sync = params.sync !== false;
-
-                    const doDownload = async () => {
-                        if (this.isTransferCancelled(task)) {
-                            throw new Error('Transfer cancelled');
+                        // Ensure local directory exists
+                        const localDir = path.dirname(params.localPath);
+                        if (!fs.existsSync(localDir)) {
+                            fs.mkdirSync(localDir, { recursive: true });
                         }
-                        task.status = 'running';
-                        this.emitTransferUpdate();
-                        let fileDownload: StreamFileDownload | undefined;
-                        try {
-                            const sftpSession = await this.getSFTPSession(session.tab);
-                            if (!sftpSession) {
-                                throw new Error('Could not open SFTP session');
-                            }
 
-                            fileDownload = new StreamFileDownload(
-                                params.localPath,
-                                remoteStats.size,
-                                (bytes: number) => {
-                                    if (!this.isTransferCancelled(task)) {
-                                        task.bytesTransferred = bytes;
-                                        task.progress = Math.round((bytes / task.totalBytes) * 100);
-                                        task.speed = bytes / ((Date.now() - task.startTime) / 1000);
-                                    }
+                        const transferId = this.generateTransferId();
+                        const task: TransferTask = {
+                            id: transferId,
+                            type: 'download',
+                            localPath: params.localPath,
+                            remotePath: params.remotePath,
+                            sessionId: session.sessionId,
+                            connectionName: session.tab.title || 'SSH Connection',
+                            status: 'pending',
+                            progress: 0,
+                            bytesTransferred: 0,
+                            totalBytes: remoteStats.size,
+                            startTime: Date.now(),
+                            cancelRequested: false
+                        };
+                        this.transferTasks.set(transferId, task);
+                        this._transferTasksSubject.next(Array.from(this.transferTasks.values()));
+                        this.cleanupOldTransfers();
+
+                        const sync = params.sync !== false;
+
+                        const doDownload = async () => {
+                            if (this.isTransferCancelled(task)) {
+                                throw new Error('Transfer cancelled');
+                            }
+                            task.status = 'running';
+                            this.emitTransferUpdate();
+                            let fileDownload: StreamFileDownload | undefined;
+                            try {
+                                const sftpSession = await this.getSFTPSession(session.tab);
+                                if (!sftpSession) {
+                                    throw new Error('Could not open SFTP session');
                                 }
-                            );
-                            task.cancelCallback = () => {
-                                this.logger.warn(`[SFTP] Cancelling download: ${transferId}`);
+
+                                fileDownload = new StreamFileDownload(
+                                    params.localPath,
+                                    remoteStats.size,
+                                    (bytes: number) => {
+                                        if (!this.isTransferCancelled(task)) {
+                                            task.bytesTransferred = bytes;
+                                            task.progress = Math.round((bytes / task.totalBytes) * 100);
+                                            task.speed = bytes / ((Date.now() - task.startTime) / 1000);
+                                        }
+                                    }
+                                );
+                                task.cancelCallback = () => {
+                                    this.logger.warn(`[SFTP] Cancelling download: ${transferId}`);
+                                    fileDownload?.cancel();
+                                };
+
+                                if (this.isTransferCancelled(task)) {
+                                    fileDownload.cancel();
+                                    throw new Error('Transfer cancelled');
+                                }
+
+                                const sshSession = (session.tab as any).sshSession;
+                                const downloadPromise = sftpSession.download(params.remotePath, fileDownload);
+                                backendWork = downloadPromise;
+                                const result = await this.waitForTransferComplete(downloadPromise, fileDownload, sshSession);
+
+                                if (this.isTransferCancelled(task)) {
+                                    throw new Error('Transfer cancelled');
+                                }
+                                if (result === 'completed_via_polling') {
+                                    this.logger.info('[sftp_download] Transfer completed via polling fallback');
+                                }
+
+                                fileDownload.commit();
+                                task.status = 'completed';
+                                task.progress = 100;
+                                task.bytesTransferred = task.totalBytes;
+                                task.endTime = Date.now();
+                                this.emitTransferUpdate();
+                            } catch (error: any) {
+                                if (!this.isTransferCancelled(task)) {
+                                    task.status = 'failed';
+                                    task.error = error.message || String(error);
+                                }
+                                task.endTime = Date.now();
+                                this.emitTransferUpdate();
                                 fileDownload?.cancel();
+                                throw error;
+                            } finally {
+                                task.cancelCallback = undefined;
+                                fileDownload?.close();
+                            }
+                        };
+
+                        transferWork = doDownload();
+                        if (sync) {
+                            await transferWork;
+                            return {
+                                content: [{
+                                    type: 'text', text: JSON.stringify({
+                                        success: true,
+                                        transferId,
+                                        remotePath: params.remotePath,
+                                        localPath: params.localPath,
+                                        bytesTransferred: task.bytesTransferred,
+                                        duration: task.endTime! - task.startTime
+                                    })
+                                }]
                             };
-
-                            if (this.isTransferCancelled(task)) {
-                                fileDownload.cancel();
-                                throw new Error('Transfer cancelled');
-                            }
-
-                            const sshSession = (session.tab as any).sshSession;
-                            const downloadPromise = sftpSession.download(params.remotePath, fileDownload);
-                            const result = await this.waitForTransferComplete(downloadPromise, fileDownload, sshSession);
-
-                            if (this.isTransferCancelled(task)) {
-                                throw new Error('Transfer cancelled');
-                            }
-                            if (result === 'completed_via_polling') {
-                                this.logger.info('[sftp_download] Transfer completed via polling fallback');
-                            }
-
-                            fileDownload.commit();
-                            task.status = 'completed';
-                            task.progress = 100;
-                            task.bytesTransferred = task.totalBytes;
-                            task.endTime = Date.now();
-                            this.emitTransferUpdate();
-                        } catch (error: any) {
-                            if (!this.isTransferCancelled(task)) {
-                                task.status = 'failed';
-                                task.error = error.message || String(error);
-                            }
-                            task.endTime = Date.now();
-                            this.emitTransferUpdate();
-                            fileDownload?.cancel();
-                            throw error;
-                        } finally {
-                            task.cancelCallback = undefined;
-                            fileDownload?.close();
+                        } else {
+                            transferWork.catch(e => {
+                                if (!this.isTransferCancelled(task)) {
+                                    this.logger.error('Async download failed:', e);
+                                }
+                            });
+                            return {
+                                content: [{
+                                    type: 'text', text: JSON.stringify({
+                                        success: true,
+                                        async: true,
+                                        transferId,
+                                        message: 'Download started. Use sftp_get_transfer_status to check progress.'
+                                    })
+                                }]
+                            };
                         }
-                    };
-
-                    if (sync) {
-                        await doDownload();
-                        return {
-                            content: [{
-                                type: 'text', text: JSON.stringify({
-                                    success: true,
-                                    transferId,
-                                    remotePath: params.remotePath,
-                                    localPath: params.localPath,
-                                    bytesTransferred: task.bytesTransferred,
-                                    duration: task.endTime! - task.startTime
-                                })
-                            }]
-                        };
-                    } else {
-                        doDownload().catch(e => {
-                            if (!this.isTransferCancelled(task)) {
-                                this.logger.error('Async download failed:', e);
-                            }
-                        });
-                        return {
-                            content: [{
-                                type: 'text', text: JSON.stringify({
-                                    success: true,
-                                    async: true,
-                                    transferId,
-                                    message: 'Download started. Use sftp_get_transfer_status to check progress.'
-                                })
-                            }]
-                        };
+                    } catch (error: any) {
+                        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: error.message || String(error) }) }] };
                     }
-                } catch (error: any) {
-                    return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: error.message || String(error) }) }] };
+                } finally {
+                    // Timeout/cancellation closes our adapter, but opaque backend I/O can
+                    // still settle later. Do not admit another transfer until that happens.
+                    void (transferWork ?? Promise.resolve()).catch(() => {}).then(() =>
+                        backendWork?.then(() => {}, () => {})).finally(release);
                 }
             }
         };
