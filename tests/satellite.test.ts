@@ -383,6 +383,31 @@ test('split pane identities are discoverable before their frontend initializes',
 
 import { Subject } from 'rxjs';
 import { execute } from '../packages/satellite/src/execute.ts';
+test('production execution releases an unknown CMD outcome and permits the next command', async () => {
+    const host = hostCategories(), terminal: any = new host.Terminal(), binary = new Subject<Buffer>();
+    terminal.profile = { name: 'cmd' }; terminal.session = { open: true, binaryOutput$: binary };
+    terminal.destroyed = new Subject<void>();
+    let input = '';
+    terminal.sendInput = (data: string) => { input = data; };
+    host.app.tabs = [terminal]; (host.app as any).selectTab = () => {};
+    // Supply the prompt normally read from Electron's frontend; execute/capture stay real.
+    (host.terminal as any).parseEnvironmentFromBuffer = () => ({ isShell: true, environment: 'cmd', promptClean: 'C:\\>' });
+    const id = host.terminal.getOrCreateSessionId(terminal);
+    const emit = (unknown: boolean) => {
+        const start = /echo (__TABBY_[a-f0-9]+_START__)/.exec(input)![1], end = start.replace('START__', 'END__');
+        binary.next(Buffer.from(`${start}\r\noutput\r\n${end}:${unknown ? 'OUTCOME_UNKNOWN' : '0'}\r\n${end}:0\r\n`));
+    };
+    try {
+        const pending = execute(host.terminal, { sessionId: id, command: 'if 1==1 (', timeout: 1000 });
+        assert.equal(host.terminal._activeCommands.size, 1); emit(true);
+        const result = JSON.parse((await pending as any).content[0].text);
+        assert.equal(result.success, false); assert.equal(result.error, 'OUTCOME_UNKNOWN'); assert.equal(result.outcomeUnknown, true);
+        assert.equal('exitCode' in result, false); assert.equal(host.terminal._activeCommands.size, 0); assert.equal(binary.observed, false);
+        const followup = execute(host.terminal, { sessionId: id, command: 'echo followup', timeout: 1000 });
+        emit(false); assert.equal(JSON.parse((await followup as any).content[0].text).success, true);
+        assert.equal(host.terminal._activeCommands.size, 0);
+    } finally { binary.complete(); terminal.destroyed.complete(); }
+});
 test('monitored execution rejects a second command and retains timed-out ownership until actual completion', { skip: process.platform === 'win32' }, async () => {
     const host = hostCategories();
     const terminal: any = new host.Terminal(); terminal.profile = { name: 'bash' }; terminal.hasFocus = true;

@@ -37,57 +37,45 @@ function runCommands(t: any, commands: string[], setup = '') {
 
 test('native CMD preserves multiline quotes, metacharacters, percent expansion and UTF-8 output', { skip: process.platform !== 'win32' }, t => {
     const [result] = runCommands(t, [
-        'echo "quoted & (parentheses)"\necho caret^&pipe^|angle^<^>\necho literal %% percent\necho café\necho %tabby_cmd_inherited%\nexit /b 0',
+        'echo "quoted & (parentheses)"\necho caret^&pipe^|angle^<^>\necho literal %% percent\necho café\necho %tabby_cmd_inherited%',
     ], 'set "tabby_cmd_inherited=from-parent"');
     assert.equal(result.exitCode, 0);
     assert.equal(result.output.replaceAll('\r\n', '\n'), '"quoted & (parentheses)"\ncaret&pipe|angle<>\nliteral % percent\ncafé\nfrom-parent\n');
 });
 
-test('native CMD completion survives nonzero exits and incomplete IF before another outer command', { skip: process.platform !== 'win32' }, t => {
-    // Temporary native-only diagnosis: compare /c argument parsing with batch EOF.
-    // Keep the production assertion below intact until a real parser boundary is proven.
-    const cases = [
-        ['multiline', 'echo raw-first\r\necho raw-second'],
-        ['balanced-group', 'if 1==1 (\r\necho grouped-first\r\necho grouped-second\r\n)'],
-        ['incomplete-group', 'if 1==1 ('],
-        ['multiline-incomplete', 'echo before-incomplete\r\nif 1==1 ('],
-        ['exit-zero', 'exit /b 0'], ['exit-seven', 'exit /b 7'],
-        ['literal-percent', 'echo literal %% percent'],
-        ['quoted-metacharacters', 'echo "quoted & (parentheses)" & echo caret^&pipe^|angle^<^>'],
-    ];
-    for (const [name, command] of cases) {
-        const native = spawnSync(process.env.ComSpec!, ['/d', '/q', '/s', '/c', `"${command}"`], {
-            windowsVerbatimArguments: true, encoding: 'utf8', timeout: 10000,
-        });
-        t.diagnostic(JSON.stringify({ rawCmdCase: name, status: native.status, error: native.error?.message,
-            stdout: native.stdout, stderr: native.stderr }));
-    }
-    const diagnosticDir = mkdtempSync(join(tmpdir(), 'tabby-cmd-subroutine-'));
-    t.after(() => rmSync(diagnosticDir, { recursive: true, force: true }));
-    for (const [name, command] of [['exit-zero', 'exit /b 0'], ['exit-seven', 'exit /b 7'], ['incomplete-group', 'if 1==1 (']]) {
-        const batch = join(diagnosticDir, `${name}.cmd`);
-        writeFileSync(batch, `@echo off\r\ncall :user\r\necho CallerDone\r\nexit /b %errorlevel%\r\n:user\r\n${command}\r\n`);
-        const native = spawnSync(process.env.ComSpec!, ['/d', '/q', '/s', '/c', `""${batch}""`], {
-            windowsVerbatimArguments: true, encoding: 'utf8', timeout: 10000,
-        });
-        t.diagnostic(JSON.stringify({ subroutineCmdCase: name, status: native.status, error: native.error?.message,
-            stdout: native.stdout, stderr: native.stderr }));
-    }
-    const results = runCommands(t, ['echo before-failure\nexit /b 7', 'if 1==1 (', 'echo outer-still-usable\nexit /b 0']);
+test('native CMD reports unproven zero exits honestly and retains the outer prompt', { skip: process.platform !== 'win32' }, t => {
+    const results = runCommands(t, ['echo before-failure\nexit /b 7', 'cmd /d /c exit 7', 'if 1==1 (', 'echo outer-still-usable', 'exit /b 0']);
     assert.equal(results[0].exitCode, 7); assert.match(results[0].output, /before-failure/);
-    assert.notEqual(results[1].exitCode, 0, 'Incomplete syntax must fail, not consume the outer completion marker.');
-    assert.equal(results[2].exitCode, 0); assert.match(results[2].output, /outer-still-usable/);
+    assert.equal(results[1].exitCode, 7, 'Reaching the completion probe must preserve a real native failure status.');
+    for (const result of [results[2], results[4]]) {
+        assert.equal(result.error, 'OUTCOME_UNKNOWN'); assert.equal(result.outcomeUnknown, true);
+        assert.equal(Object.hasOwn(result, 'exitCode'), false, 'A zero native exit without completion proof must not fabricate a status.');
+    }
+    assert.equal(results[3].exitCode, 0); assert.match(results[3].output, /outer-still-usable/);
 });
 
 test('native CMD child inherits cwd/environment but changes do not persist; large payloads are staged', { skip: process.platform !== 'win32' }, t => {
     const commands = [
         'echo %tabby_cmd_state%\ncd\nset "tabby_cmd_state=child"\ncd "__CHILD_DIRECTORY__"\necho %tabby_cmd_state%\ncd\nexit /b 4',
-        'echo %tabby_cmd_state%\ncd\nexit /b 0',
-        Array.from({ length: 200 }, (_, index) => `rem ${index} ${'x'.repeat(90)}`).join('\n') + '\necho staged-large-command\nexit /b 0',
+        'echo %tabby_cmd_state%\ncd',
+        Array.from({ length: 200 }, (_, index) => `rem ${index} ${'x'.repeat(90)}`).join('\n') + '\necho staged-large-command',
     ];
     assert.ok(commands[2].length > 8191);
     const [child, followup, large] = runCommands(t, commands, 'set "tabby_cmd_state=parent"');
     assert.equal(child.exitCode, 4); assert.match(child.output, /^parent\r?\n/); assert.match(child.output, /child directory/);
     assert.equal(followup.exitCode, 0); assert.match(followup.output, /^parent\r?\n/); assert.doesNotMatch(followup.output, /child directory/);
     assert.equal(large.exitCode, 0); assert.match(large.output, /staged-large-command/);
+});
+
+test('command capture recognizes only its exact unknown-outcome completion marker', () => {
+    const wrapper = commandWrapper('echo test', 'cmd', 'abc');
+    const capture = new CommandCapture(wrapper.start, wrapper.end);
+    const text = `${wrapper.start}\r\npartial output\r\n__TABBY_other_END__:OUTCOME_UNKNOWN\r\n${wrapper.end}:OUTCOME_UNKNOWN\r\n${wrapper.end}:0\r\n`;
+    let result: ReturnType<CommandCapture['feed']>;
+    for (const character of text) { result = capture.feed(character); if (result) break; }
+    const expected = { output: 'partial output\r\n__TABBY_other_END__:OUTCOME_UNKNOWN', truncated: false,
+        error: 'OUTCOME_UNKNOWN', outcomeUnknown: true };
+    assert.deepEqual(result, expected);
+    assert.deepEqual(new CommandCapture(wrapper.start, wrapper.end).feed(text), expected,
+        'The first unknown marker must win over a later numeric fallback in the same chunk.');
 });

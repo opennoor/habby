@@ -117,6 +117,7 @@ Session targeting (priority order): sessionId > tabIndex > title > profileName
 
 For interactive/paging commands (less, vim, top), set waitForOutput=false.
 Monitored CMD uses batch syntax (e.g. for %%i) in a child CMD launched by Windows PowerShell.
+Unfinished syntax or an early zero exit that skips the completion probe reports OUTCOME_UNKNOWN.
 Use send_input for persistent CMD directory/environment changes or interactive input.
 For long-running commands, increase timeout or use waitForOutput=false and poll with get_terminal_buffer.`, schema: targets(z.object({
                 command: z.string().describe('Command to execute'),

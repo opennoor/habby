@@ -27,7 +27,8 @@ Monitored CMD commands use batch syntax (for example, `for %%i`) in a child CMD
 process, launched by Windows PowerShell, so malformed syntax cannot consume
 completion markers. Changes to that child's
 directory or environment do not persist in the pane; use `send_input` for those
-changes or interactive commands.
+changes or interactive commands. A zero exit without the completion probe,
+including unfinished syntax or an early `exit /b 0`, reports `OUTCOME_UNKNOWN`.
 
 Local clients need no authentication. `tabby-hub expose tailnet` enables trusted
 direct Tailnet access. Public HTTPS and Funnel access uses OAuth authorization

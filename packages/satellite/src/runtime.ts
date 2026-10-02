@@ -31,29 +31,34 @@ export function commandWrapper(command: string, shell: Shell, nonce = randomUUID
         // A child batch parser cannot consume the outer prompt's completion markers.
         // Base64 staging keeps quotes/metacharacters out of that parser and bounds each
         // input line below CMD's 8191-character limit, including for remote Windows panes.
-        const payload = `tabby-hub-${nonce}.b64`, batch = `tabby-hub-${nonce}.cmd`;
+        const payload = `tabby-hub-${nonce}.b64`, batch = `tabby-hub-${nonce}.cmd`, completion = `tabby-hub-${nonce}.done`;
         const encoded = Buffer.from(command.replace(/\r\n|\r|\n/g, '\r\n'), 'utf8').toString('base64');
         const chunks = encoded.match(/.{1,4096}/g) ?? [''];
         const staging = chunks.map((chunk, index) => `${index ? '>>' : '>'} "%TEMP%\\${payload}" echo(${chunk}`).join('\r\n');
         // Use .NET APIs only: Windows PowerShell 5.1 is present on supported Windows.
         // Batch bytes follow the pane's console code page, without an encoding preamble.
-        const script = `$ErrorActionPreference='Stop'; $code=1; $created=$false;
-$p=[IO.Path]::Combine($env:TEMP,'${payload}'); $b=[IO.Path]::Combine($env:TEMP,'${batch}');
+        const script = `$ErrorActionPreference='Stop'; $code=1; $created=$false; $completed=$false;
+$p=[IO.Path]::Combine($env:TEMP,'${payload}'); $b=[IO.Path]::Combine($env:TEMP,'${batch}'); $done=[IO.Path]::Combine($env:TEMP,'${completion}');
 try {
     $command=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([IO.File]::ReadAllText($p)));
-    $bytes=[Console]::InputEncoding.GetBytes('@echo off'+[Environment]::NewLine+$command+[Environment]::NewLine);
+    $bytes=[Console]::InputEncoding.GetBytes('@echo off'+[Environment]::NewLine+$command+[Environment]::NewLine+'@> "%TEMP%\\${completion}" echo ${nonce}:%errorlevel%'+[Environment]::NewLine);
     $file=[IO.File]::Open($b,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); $created=$true;
     try { $file.Write($bytes,0,$bytes.Length) } finally { $file.Dispose() }
     $info=[Diagnostics.ProcessStartInfo]::new(); $info.FileName=$env:ComSpec;
     $info.Arguments='/d /q /s /c ""'+$b+'""'; $info.UseShellExecute=$false;
     $process=[Diagnostics.Process]::Start($info);
     try { $process.WaitForExit(); $code=$process.ExitCode } finally { $process.Dispose() }
+    $proof=if ([IO.File]::Exists($done)) { [IO.File]::ReadAllText($done).Trim() } else { '' };
+    if ($proof -match '^${nonce}:(-?\\d+)$') { $completed=$true; $code=[int]$Matches[1] }
 } catch { [Console]::Error.WriteLine($_); $code=1 }
-finally { if ($created) { [IO.File]::Delete($b) }; [IO.File]::Delete($p) }
+finally { if ($created) { [IO.File]::Delete($b) }; [IO.File]::Delete($p); [IO.File]::Delete($done) }
+$status=if ($code -eq 0 -and -not $completed) { 'OUTCOME_UNKNOWN' } else { $code };
+[Console]::WriteLine(); [Console]::WriteLine('${end}:'+$status);
 exit $code`;
         const launcher = Buffer.from(script, 'utf16le').toString('base64');
         // CMD cwd/env changes stay in the child; send_input retains interactive state.
-        // Expand errorlevel on its own input line, before the fallback payload cleanup.
+        // The launcher emits the completion marker only after the child has stopped and
+        // its exact nonce probe has been checked. CMD can exit zero on unfinished input.
         text = `echo ${start}\r\n${staging}\r\n"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -NonInteractive -EncodedCommand ${launcher}\r\necho.\r\necho ${end}:%errorlevel%\r\ndel /q "%TEMP%\\${payload}" >nul 2>&1`;
     } else {
         const escaped = command.replaceAll("'", "'\\''");
@@ -64,17 +69,19 @@ exit $code`;
 export class CommandCapture {
     private pending = ''; private started = false; private output = ''; private truncated = false;
     constructor(private start: string, private end: string, private maxBytes = 1024 * 1024) {}
-    feed(chunk: string): { output: string; exitCode: number; truncated: boolean } | undefined {
+    feed(chunk: string): { output: string; exitCode?: number; truncated: boolean; error?: 'OUTCOME_UNKNOWN'; outcomeUnknown?: true } | undefined {
         this.pending += chunk;
         if (!this.started) {
             const match = new RegExp(`(?:^|\\r?\\n)${this.start}\\r?\\n`).exec(this.pending);
             if (!match) { this.pending = this.pending.slice(-this.start.length - 4); return; }
             this.pending = this.pending.slice(match.index + match[0].length); this.started = true;
         }
-        const finish = new RegExp(`(?:^|\\r?\\n)${this.end}:(-?\\d+)\\r?\\n`).exec(this.pending);
+        const finish = new RegExp(`(?:^|\\r?\\n)${this.end}:(-?\\d+|OUTCOME_UNKNOWN)\\r?\\n`).exec(this.pending);
         if (finish) {
             this.append(this.pending.slice(0, finish.index));
-            return { output: this.output, exitCode: Number(finish[1]), truncated: this.truncated };
+            return finish[1] === 'OUTCOME_UNKNOWN'
+                ? { output: this.output, truncated: this.truncated, error: 'OUTCOME_UNKNOWN', outcomeUnknown: true }
+                : { output: this.output, exitCode: Number(finish[1]), truncated: this.truncated };
         }
         const keep = this.end.length + 32;
         if (this.pending.length > keep) { this.append(this.pending.slice(0, -keep)); this.pending = this.pending.slice(-keep); }
