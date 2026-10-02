@@ -1,16 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, mkdir, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { request } from 'node:http';
+import { request as secureRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startHub } from '../packages/hub/src/hub.js';
 import { initializeState } from '../packages/hub/src/state.js';
+import { openStore } from '../packages/hub/src/auth/store.js';
 import { TOOLS } from '../shared/catalog.js';
 import { globalId, LOCAL_PRINCIPAL, type HubConfig, type SatelliteTrust } from '../shared/protocol.js';
 import { SatelliteClient } from '../packages/satellite/src/client.ts';
@@ -153,4 +155,61 @@ test('real satellite publishes newly created targets before the tool response', 
     tabId: globalId(satellite.windowId, 'fresh-tab'), input: 'hello',
   }, LOCAL_PRINCIPAL);
   assert.match(JSON.stringify(result), /fresh-tab/);
+});
+
+
+test('failed public bind and config publication leave no committed origin and allow a different retry', async t => {
+  const config = await temporaryConfig(); const hub = await startHub(config);
+  t.after(async () => { await hub.close(); await rm(config.stateDir, { recursive: true, force: true }); });
+  const { adminCredential } = JSON.parse(await readFile(join(config.stateDir, 'secrets.json'), 'utf8'));
+  const trust = JSON.parse(await readFile(join(config.stateDir, 'satellite.json'), 'utf8'));
+  const configure = (publicUrl: string) => new Promise<{ status: number; body: any }>((resolve, reject) => {
+    const req = secureRequest(`https://127.0.0.1:${config.satellitePort}/admin/configure`, {
+      method: 'POST', ca: trust.certificate, headers: { authorization: `Bearer ${adminCredential}`, 'content-type': 'application/json' },
+    }, res => { let text = ''; res.on('data', data => { text += data; }); res.on('end', () => resolve({ status: res.statusCode!, body: JSON.parse(text) })); });
+    req.on('error', reject); req.end(JSON.stringify({ publicUrl }));
+  });
+  const persistedOrigin = async () => { const store = await openStore(config.stateDir); try { return store.get('public-origin'); } finally { store.close(); } };
+  const occupied = createServer(); occupied.listen(config.publicPort, '127.0.0.1'); await once(occupied, 'listening');
+  try { assert.equal((await configure('https://occupied.example/mcp')).status, 500); }
+  finally { await new Promise<void>(resolve => occupied.close(() => resolve())); }
+  assert.equal(config.publicUrl, undefined); assert.equal(await persistedOrigin(), undefined);
+  assert.equal(JSON.parse(await readFile(join(config.stateDir, 'config.json'), 'utf8')).publicUrl, undefined);
+  const target = join(config.stateDir, 'config.json'), backup = target + '.backup';
+  await rename(target, backup); await mkdir(target);
+  try { assert.equal((await configure('https://unpublished.example/mcp')).status, 500); }
+  finally { await rm(target, { recursive: true }); await rename(backup, target); }
+  assert.equal(config.publicUrl, undefined); assert.equal(await persistedOrigin(), undefined);
+  const success = await configure('https://final.example/tabby/mcp');
+  assert.equal(success.status, 200); assert.match(success.body.url, /^https:\/\/final.example\/tabby\/owner\/enroll/);
+  assert.equal(await persistedOrigin(), 'https://final.example');
+  assert.equal(JSON.parse(await readFile(target, 'utf8')).publicUrl, 'https://final.example/tabby/mcp');
+  assert.equal((await configure('https://migration.example/mcp')).status, 500);
+  assert.equal(await persistedOrigin(), 'https://final.example');
+});
+
+test('failed auth origin commit rolls back persisted config and permits a fresh listener retry', async t => {
+  const config = await temporaryConfig();
+  let attempts = 0;
+  const { createPublicAuth } = await import('../packages/hub/src/auth.js');
+  const hub = await startHub(config, { authFactory: async (input, options) => {
+    const auth = await createPublicAuth(input, options); const commit = auth.commitOrigin;
+    auth.commitOrigin = () => { if (++attempts === 1) throw new Error('origin store failed'); commit(); }; return auth;
+  } });
+  t.after(async () => { await hub.close(); await rm(config.stateDir, { recursive: true, force: true }); });
+  const { adminCredential } = JSON.parse(await readFile(join(config.stateDir, 'secrets.json'), 'utf8'));
+  const trust = JSON.parse(await readFile(join(config.stateDir, 'satellite.json'), 'utf8'));
+  const configure = (publicUrl: string) => new Promise<number>((resolve, reject) => {
+    const req = secureRequest(`https://127.0.0.1:${config.satellitePort}/admin/configure`, {
+      method: 'POST', ca: trust.certificate, headers: { authorization: `Bearer ${adminCredential}`, 'content-type': 'application/json' },
+    }, res => { res.resume(); res.on('end', () => resolve(res.statusCode!)); });
+    req.on('error', reject); req.end(JSON.stringify({ publicUrl }));
+  });
+  assert.equal(await configure('https://failed.example/mcp'), 500);
+  assert.equal(config.publicUrl, undefined);
+  assert.equal(JSON.parse(await readFile(join(config.stateDir, 'config.json'), 'utf8')).publicUrl, undefined);
+  const store = await openStore(config.stateDir); try { assert.equal(store.get('public-origin'), undefined); } finally { store.close(); }
+  assert.equal(await configure('https://recovered.example/mcp'), 200);
+  assert.equal(attempts, 2);
+  assert.equal((await fetch(`http://127.0.0.1:${config.publicPort}/.well-known/oauth-protected-resource/mcp`)).status, 200);
 });

@@ -375,3 +375,13 @@ test('refresh-token reuse revokes its family and resource-server verification re
     payload.exp=Math.floor(now/1000)-60;db.prepare('UPDATE oauth SET payload=? WHERE key=?').run(JSON.stringify(payload),digest(token));assert.equal((await desktop.request('/mcp',{headers:{authorization:'Bearer '+token}})).status,401);db.close();
   }finally{await f.close();}
 });
+
+test('deferred origin commit rechecks an origin enrolled by another setup', async t => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'tabby-origin-commit-'));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const base = { stateDir, trustedPort: 0, satellitePort: 0, publicPort: 0 };
+  const first = await createPublicAuth({ ...base, publicUrl: 'https://first.example/mcp' }, { deferOriginCommit: true });
+  const second = await createPublicAuth({ ...base, publicUrl: 'https://second.example/mcp' }, { deferOriginCommit: true });
+  try { first.commitOrigin(); assert.throws(() => second.commitOrigin(), /Public hostname changed/); }
+  finally { await first.close(); await second.close(); }
+});

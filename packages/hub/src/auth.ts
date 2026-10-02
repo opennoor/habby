@@ -34,7 +34,7 @@ function normalizeClient(input: Record<string, unknown>, clientId = secret()): C
     redirect_uris: redirects as string[], token_endpoint_auth_method: 'none', grant_types: ['authorization_code','refresh_token'], response_types: ['code'] };
 }
 
-export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
+export async function createPublicAuth(config: HubConfig, options: { deferOriginCommit?: boolean } = {}): Promise<PublicAuth> {
   if (!config.publicUrl) throw new Error('Set the final public HTTPS MCP URL before enabling public authentication.');
   const resource = new URL(config.publicUrl);
   if (resource.protocol !== 'https:' || resource.username || resource.password || resource.search || resource.hash || !resource.pathname.endsWith('/mcp')) throw new Error('publicUrl must be a clean HTTPS MCP URL ending in /mcp.');
@@ -46,7 +46,7 @@ export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
   const store = await openStore(config.stateDir);
   const generation = () => store.get<number>('owner-generation') ?? 0;
   if (store.get<string>('public-origin') && store.get<string>('public-origin') !== origin) { store.close(); throw new Error('Public hostname changed. Restore the enrolled origin or explicitly migrate owner credentials.'); }
-  store.set('public-origin', origin);
+
   let keys = store.get<string[]>('cookie-keys');
   if (!keys) { keys = [secret(), secret()]; store.set('cookie-keys', keys); }
   let jwks = store.get<{ keys: Record<string, unknown>[] }>('jwks');
@@ -402,7 +402,16 @@ export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
       return true;
     }
   }
+  const commitOrigin = () => {
+    const enrolled = store.get<string>('public-origin');
+    if (enrolled && enrolled !== origin) throw new Error('Public hostname changed. Restore the enrolled origin or explicitly migrate owner credentials.');
+    store.set('public-origin', origin);
+  };
+  if (!options.deferOriginCommit) {
+    try { commitOrigin(); } catch (error) { store.close(); throw error; }
+  }
   return {
+    commitOrigin,
     handle,
     async authenticate(req) {
       const url = new URL(req.url ?? '/', origin);

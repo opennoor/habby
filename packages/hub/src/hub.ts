@@ -24,6 +24,7 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
   let publicServer: Server | undefined;
   let publicHandler: ReturnType<typeof createMcpHandler> | undefined;
   let enablingPublic: Promise<void> | undefined;
+  let publicReady = false;
   const peers = new Set<WebSocket>();
   const bindings = new Map<WebSocket, { windowId: string; epoch: string }>();
   const handlers = new Set<ReturnType<typeof createMcpHandler>>();
@@ -88,8 +89,7 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
       if (config.publicUrl && config.publicUrl !== body.publicUrl) throw new Error('Changing an enrolled public origin requires a separate owner migration.');
       const previousUrl = config.publicUrl;
       config.publicUrl = body.publicUrl;
-      try { await enablePublic(); } catch (error) { config.publicUrl = previousUrl; throw error; }
-      await writePrivateJson(join(config.stateDir, 'config.json'), config);
+      try { await enablePublic(true, previousUrl); } catch (error) { config.publicUrl = previousUrl; throw error; }
       return json(res, 200, { url: await publicAuth!.enrollmentLink() });
     }
     if (req.url === '/admin/trusted-hosts' && req.method === 'POST') {
@@ -140,10 +140,11 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
     for (const [socket, binding] of bindings) if (binding.windowId === windowId) socket.terminate();
   });
 
-  async function enablePublic(): Promise<void> {
+  async function enablePublic(persistConfig = false, previousUrl?: string): Promise<void> {
     if (enablingPublic) return enablingPublic;
     if (publicServer || !config.publicUrl) return;
-    enablingPublic = openPublic().catch(async error => {
+    enablingPublic = openPublic(persistConfig, previousUrl).catch(async error => {
+      publicReady = false;
       publicServer?.close(); publicServer = undefined;
       if (publicHandler) { await publicHandler.close(); handlers.delete(publicHandler); publicHandler = undefined; }
       await publicAuth?.close(); publicAuth = undefined;
@@ -151,15 +152,16 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
     }).finally(() => { enablingPublic = undefined; });
     return enablingPublic;
   }
-  async function openPublic(): Promise<void> {
+  async function openPublic(persistConfig: boolean, previousUrl?: string): Promise<void> {
     const factory = options.authFactory ?? (await import('./auth.js')).createPublicAuth;
-    publicAuth = await factory(config);
+    publicAuth = await factory(config, { deferOriginCommit: true });
     publicHandler = makeMcp(true);
     const nodeHandler = toNodeHandler(publicHandler, { maxRequestBodySize: MAX_FRAME_BYTES });
     publicServer = createServer((req, res) => void routePublic(req, res).catch(error => respondError(res, error)));
     track(publicServer);
     const publicUrl = new URL(config.publicUrl!);
     async function routePublic(req: IncomingMessage, res: ServerResponse): Promise<void> {
+      if (!publicReady) return json(res, 503, { error: 'Public setup is not committed.' });
       if (req.headers.origin && req.headers.origin !== publicUrl.origin)
         return json(res, 403, { error: 'Browser origin rejected.' });
       if (await publicAuth!.handle(req, res)) return;
@@ -187,6 +189,13 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
       try { await nodeHandler(req, res); } finally { if (res.writableEnded) clear(); }
     }
     await listen(publicServer, config.publicPort);
+    if (persistConfig) await writePrivateJson(join(config.stateDir, 'config.json'), config);
+    try { publicAuth.commitOrigin(); }
+    catch (error) {
+      if (persistConfig) await writePrivateJson(join(config.stateDir, 'config.json'), { ...config, publicUrl: previousUrl });
+      throw error;
+    }
+    publicReady = true;
   }
 
   let closing: Promise<void> | undefined;

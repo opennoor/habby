@@ -7,6 +7,7 @@ export interface PublicAuth {
   authenticate(req: IncomingMessage): Promise<Principal>;
   isAuthorized(principal: Principal): Promise<boolean>;
   enrollmentLink(): Promise<string>;
+  commitOrigin(): void;
   close(): Promise<void>;
 }
-export type PublicAuthFactory = (config: HubConfig) => Promise<PublicAuth>;
+export type PublicAuthFactory = (config: HubConfig, options?: { deferOriginCommit?: boolean }) => Promise<PublicAuth>;
