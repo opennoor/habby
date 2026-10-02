@@ -19,7 +19,8 @@ export function commandWrapper(command: string, shell: Shell, nonce = randomUUID
     const start = `${head}START__`, end = `${head}END__`;
     let text: string;
     if (shell === 'fish') {
-        text = `printf '\\n%s%s\\n' '${head}' 'START__'; begin; ${command}\nend; set -l tabby_hub_${nonce} $status; printf '\\n%s%s:%s\\n' '${head}' 'END__' $tabby_hub_${nonce}`;
+        const escaped = command.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+        text = `printf '\\n%s%s\\n' '${head}' 'START__'; eval '${escaped}'; set -l tabby_hub_${nonce} $status; printf '\\n%s%s:%s\\n' '${head}' 'END__' $tabby_hub_${nonce}`;
     } else if (shell === 'powershell') {
         const status = `tabby_hub_${nonce}`;
         const script = `${command}\n$global:${status}_ok=$?; $global:${status}_exit=$LASTEXITCODE`;
@@ -80,8 +81,9 @@ export class OutputRings {
         }
         ring.touched = Date.now();
         while ([...this.rings.values()].reduce((n, r) => n + r.data.length, 0) > this.totalLimit) {
-            const oldest = [...this.rings.entries()].sort((a,b) => a[1].touched - b[1].touched)[0];
-            this.rings.delete(oldest[0]);
+            const oldest = [...this.rings.entries()].filter(([, r]) => r.data.length).sort((a,b) => a[1].touched - b[1].touched || Number(a[0] === id) - Number(b[0] === id))[0];
+            Object.assign(oldest[1], { epoch: randomUUID(), data: Buffer.alloc(0), length: 0, offset: 0 });
+            for (const [wake, target] of [...this.waiters]) if (target === oldest[0]) wake();
         }
         for (const [wake, target] of [...this.waiters]) if (target === id) wake();
     }
@@ -106,7 +108,7 @@ export class OutputRings {
             return { data: bytes.toString('base64'), encoding: 'base64', cursor: `${ring.epoch}:${offset + bytes.length}`, gap, bytes: bytes.length };
         };
         let result = read();
-        if (!result.bytes && waitMs && !signal?.aborted) {
+        if (!result.bytes && !result.gap && waitMs && !signal?.aborted) {
             await new Promise<void>((resolve) => {
                 const wake = () => { clearTimeout(timer); this.waiters.delete(wake); signal?.removeEventListener('abort', wake); resolve(); };
                 const timer = setTimeout(wake, waitMs); this.waiters.set(wake, id); signal?.addEventListener('abort', wake, { once: true });

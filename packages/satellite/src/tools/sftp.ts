@@ -37,7 +37,7 @@ interface TransferTask {
     remotePath: string;
     sessionId: string;
     connectionName: string;    // SSH connection title for display
-    status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+    status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
     progress: number;          // 0-100
     bytesTransferred: number;
     totalBytes: number;
@@ -156,7 +156,7 @@ export class SFTPToolCategory extends BaseToolCategory {
 
     private cleanupOldTransfers(): void {
         const tasks = Array.from(this.transferTasks.values());
-        const completed = tasks.filter(t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled');
+        const completed = tasks.filter(t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled' || t.status === 'unknown');
         if (completed.length > this.maxTransferHistory) {
             completed.sort((a, b) => (a.endTime || 0) - (b.endTime || 0));
             const toRemove = completed.slice(0, completed.length - this.maxTransferHistory);
@@ -165,68 +165,53 @@ export class SFTPToolCategory extends BaseToolCategory {
         }
     }
 
-    /**
-     * Wait for transfer to complete with a polling fallback.
-     *
-     * Tabby's SFTP API (based on russh) may not always resolve the Promise
-     * even when the transfer is complete. This method uses Promise.race to
-     * detect completion via polling the isComplete() method.
-     *
-     * Also checks for SSH session disconnection to prevent infinite waits.
-     *
-     * @param sftpPromise - The original sftpSession.upload/download promise
-     * @param transferObj - StreamFileUpload or StreamFileDownload with isComplete()
-     * @param sshSession - Optional SSH session to check for disconnection
-     * @param pollIntervalMs - How often to check isComplete()
-     * @param maxWaitMs - Maximum time to wait before timing out (0 = no timeout)
-     */
+    /** Wait for the backend or its completed close callback, never byte count alone. */
     private async waitForTransferComplete<T>(
         sftpPromise: Promise<T>,
-        transferObj: { isComplete: () => boolean; isCancelled: () => boolean },
+        transferObj: { isComplete: () => boolean; isCancelled: () => boolean; cancel: () => void },
         sshSession?: { open: boolean },
         pollIntervalMs: number = 500,
-        maxWaitMs: number = 0
+        maxWaitMs: number = this.config.store.mcp?.sftp?.timeout ?? 60000
     ): Promise<T | 'completed_via_polling'> {
-        const startTime = Date.now();
+        const timeout = Number.isFinite(maxWaitMs) && maxWaitMs > 0 ? Math.min(maxWaitMs, 2147483647) : 60000;
+        const signal = requestContext.getStore();
         let pollTimer: ReturnType<typeof setTimeout> | undefined;
-        let pollingStopped = false;
-
-        const pollingPromise = new Promise<'completed_via_polling'>((resolve, reject) => {
-            const checkComplete = () => {
-                if (pollingStopped) {
-                    return;
-                }
-                if (sshSession && sshSession.open === false) {
-                    this.logger.warn('[SFTP] SSH session disconnected during transfer');
-                    reject(new Error('SSH connection lost during transfer'));
-                    return;
-                }
-                if (transferObj.isCancelled()) {
-                    reject(new Error('Transfer cancelled'));
-                    return;
-                }
-                if (transferObj.isComplete()) {
-                    this.logger.debug('[SFTP] Transfer detected as complete via polling');
-                    resolve('completed_via_polling');
-                    return;
-                }
-                if (maxWaitMs > 0 && (Date.now() - startTime) > maxWaitMs) {
-                    reject(new Error(`Transfer timed out after ${maxWaitMs}ms`));
-                    return;
-                }
-                pollTimer = setTimeout(checkComplete, pollIntervalMs);
+        let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+        let onAbort: (() => void) | undefined;
+        const checkState = () => {
+            if (signal?.aborted || transferObj.isCancelled()) throw new Error('Transfer cancelled');
+            if (sshSession?.open === false) throw new Error('SSH connection lost during transfer');
+        };
+        const completion = new Promise<'completed_via_polling'>((resolve, reject) => {
+            onAbort = () => reject(new Error('Transfer cancelled'));
+            signal?.addEventListener('abort', onAbort, { once: true });
+            deadlineTimer = setTimeout(() => reject(new Error(`Transfer timed out after ${timeout}ms`)), timeout);
+            const poll = () => {
+                try {
+                    checkState();
+                    if (transferObj.isComplete()) {
+                        resolve('completed_via_polling');
+                    } else {
+                        pollTimer = setTimeout(poll, pollIntervalMs);
+                    }
+                } catch (error) { reject(error); }
             };
-
-            pollTimer = setTimeout(checkComplete, pollIntervalMs);
+            try { checkState(); } catch (error) { reject(error); return; }
+            pollTimer = setTimeout(poll, pollIntervalMs);
         });
-
         try {
-            return await Promise.race([sftpPromise, pollingPromise]);
+            return await Promise.race([sftpPromise.then(result => {
+                checkState();
+                if (!transferObj.isComplete()) throw new Error('Transfer ended before the expected file size was transferred');
+                return result;
+            }), completion]);
+        } catch (error) {
+            transferObj.cancel();
+            throw error;
         } finally {
-            pollingStopped = true;
-            if (pollTimer) {
-                clearTimeout(pollTimer);
-            }
+            clearTimeout(pollTimer);
+            clearTimeout(deadlineTimer);
+            if (onAbort) signal?.removeEventListener('abort', onAbort);
         }
     }
 
@@ -257,7 +242,7 @@ export class SFTPToolCategory extends BaseToolCategory {
             // waitForTransferComplete polls isCancelled() and rejects the MCP
             // tool promise within one poll interval (500ms)
             this.emitTransferUpdate();
-            this.logger.info(`Transfer ${transferId} cancelled by user`);
+            this.logger.info(`Transfer ${transferId} cancellation requested by user`);
             return true;
         }
         return false;
@@ -267,7 +252,7 @@ export class SFTPToolCategory extends BaseToolCategory {
     public clearCompletedTransfers(): void {
         const toRemove: string[] = [];
         this.transferTasks.forEach((task, id) => {
-            if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
+            if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled' || task.status === 'unknown') {
                 toRemove.push(id);
             }
         });
@@ -820,7 +805,8 @@ For text content only. Use sftp_upload for binary files.`,
 
 Example: { "localPath": "/home/user/file.txt", "remotePath": "/tmp/uploaded.txt" }
 
-Max upload size is configurable in Tabby Settings → MCP → SFTP.`,
+Max upload size is configurable in Tabby Settings → MCP → SFTP.
+An interrupted upload can report OUTCOME_UNKNOWN: the remote backend may still commit. Inspect the remote file before retrying.`,
             schema: z.object({
                 ...this.sessionSchema,
                 localPath: z.string().describe('REQUIRED: Absolute path to local file (e.g., /home/user/file.txt)'),
@@ -898,6 +884,7 @@ Max upload size is configurable in Tabby Settings → MCP → SFTP.`,
                     task.status = 'running';
                     this.emitTransferUpdate();
                     let fileUpload: StreamFileUpload | undefined;
+                    let uploadStarted = false;
                     try {
                         const sftpSession = await this.getSFTPSession(session.tab);
                         if (!sftpSession) {
@@ -917,6 +904,10 @@ Max upload size is configurable in Tabby Settings → MCP → SFTP.`,
                         );
                         task.cancelCallback = () => {
                             this.logger.warn(`[SFTP] Cancelling upload: ${transferId}`);
+                            if (uploadStarted) {
+                                task.status = 'unknown';
+                                task.error = 'Cancellation requested; remote upload outcome is unknown. Inspect the remote file before retrying.';
+                            }
                             fileUpload?.cancel();
                         };
 
@@ -926,6 +917,7 @@ Max upload size is configurable in Tabby Settings → MCP → SFTP.`,
                         }
 
                         const sshSession = (session.tab as any).sshSession;
+                        uploadStarted = true;
                         const uploadPromise = sftpSession.upload(params.remotePath, fileUpload);
                         const result = await this.waitForTransferComplete(uploadPromise, fileUpload, sshSession);
 
@@ -942,7 +934,11 @@ Max upload size is configurable in Tabby Settings → MCP → SFTP.`,
                         task.endTime = Date.now();
                         this.emitTransferUpdate();
                     } catch (error: any) {
-                        if (!this.isTransferCancelled(task)) {
+                        if (uploadStarted) {
+                            // Tabby's opaque upload can still unlink/rename after its last read.
+                            task.status = 'unknown';
+                            task.error = `${error.message || String(error)}. Remote upload outcome is unknown; inspect the remote file before retrying.`;
+                        } else if (!this.isTransferCancelled(task)) {
                             task.status = 'failed';
                             task.error = error.message || String(error);
                         }
@@ -975,7 +971,9 @@ Max upload size is configurable in Tabby Settings → MCP → SFTP.`,
                         return {
                             content: [{
                                 type: 'text', text: JSON.stringify({
-                                    success: false, transferId, error: error.message || String(error)
+                                    success: false, transferId,
+                                    code: task.status === 'unknown' ? 'OUTCOME_UNKNOWN' : undefined,
+                                    error: task.error || error.message || String(error)
                                 })
                             }]
                         };
@@ -1148,6 +1146,7 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
                                 this.logger.info('[sftp_download] Transfer completed via polling fallback');
                             }
 
+                            fileDownload.commit();
                             task.status = 'completed';
                             task.progress = 100;
                             task.bytesTransferred = task.totalBytes;
@@ -1232,6 +1231,7 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
                             transferId: task.id,
                             type: task.type,
                             status: task.status,
+                            code: task.status === 'unknown' ? 'OUTCOME_UNKNOWN' : undefined,
                             progress: task.progress,
                             bytesTransferred: task.bytesTransferred,
                             totalBytes: task.totalBytes,
@@ -1254,7 +1254,7 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
             name: 'sftp_list_transfers',
             description: 'List all active and recent file transfers.',
             schema: z.object({
-                status: z.enum(['all', 'active', 'completed', 'failed']).optional().describe('Filter by status')
+                status: z.enum(['all', 'active', 'completed', 'failed', 'unknown']).optional().describe('Filter by status')
             }),
             handler: async (params: { status?: string }) => {
                 let tasks = Array.from(this.transferTasks.values());
@@ -1279,6 +1279,7 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
                                 id: t.id,
                                 type: t.type,
                                 status: t.status,
+                                code: t.status === 'unknown' ? 'OUTCOME_UNKNOWN' : undefined,
                                 progress: t.progress,
                                 localPath: t.localPath,
                                 remotePath: t.remotePath,
@@ -1295,7 +1296,7 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
     private createCancelTransferTool(): McpTool {
         return {
             name: 'sftp_cancel_transfer',
-            description: 'Cancel an active file transfer.',
+            description: 'Request cancellation of an active file transfer. Started uploads may report an unknown remote outcome.',
             schema: z.object({
                 transferId: z.string().describe('Transfer task ID to cancel')
             }),
@@ -1311,7 +1312,7 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
                     };
                 }
 
-                if (task.status !== 'pending' && task.status !== 'running') {
+                if (!['pending', 'running'].includes(task.status)) {
                     return {
                         content: [{
                             type: 'text', text: JSON.stringify({
@@ -1329,8 +1330,7 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
                     return this.rejectedResponse('sftp_cancel_transfer');
                 }
 
-                // Use the same path as the UI cancel button: invokes cancelCallback to
-                // actually terminate the underlying stream/session, not just flip status
+                // Use the UI cancellation path; the opaque remote upload may still commit.
                 const cancelled = this.cancelTransferById(params.transferId);
 
                 return {
@@ -1338,7 +1338,9 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
                         type: 'text', text: JSON.stringify({
                             success: cancelled,
                             transferId: params.transferId,
-                            message: cancelled ? 'Transfer cancelled' : 'Transfer could not be cancelled'
+                            status: task.status,
+                            code: task.status === 'unknown' ? 'OUTCOME_UNKNOWN' : undefined,
+                            message: task.status === 'unknown' ? task.error : cancelled ? 'Transfer cancelled' : 'Transfer could not be cancelled'
                         })
                     }]
                 };
@@ -1360,6 +1362,7 @@ class StreamFileUpload {
     private readonly chunkSize = 64 * 1024; // 64KB chunks
     private onProgress: (bytes: number) => void;
     private cancelled = false;
+    private closed = false;
     private signal = requestContext.getStore();
 
     constructor(filePath: string, size: number, onProgress?: (bytes: number) => void) {
@@ -1379,8 +1382,8 @@ class StreamFileUpload {
     getSize(): number { return this.size; }
     getMode(): number { return 0o644; }
     getCompletedBytes(): number { return this.position; }
-    isComplete(): boolean { return this.position >= this.size; }
-    isCancelled(): boolean { return this.cancelled; }
+    isComplete(): boolean { return this.closed && !this.isCancelled() && this.position === this.size; }
+    isCancelled(): boolean { return this.cancelled || !!this.signal?.aborted; }
 
     cancel(): void {
         this.cancelled = true;
@@ -1412,6 +1415,7 @@ class StreamFileUpload {
     }
 
     close(): void {
+        this.closed = true;
         if (this.fd !== null) {
             try {
                 fs.closeSync(this.fd);
@@ -1429,68 +1433,72 @@ class StreamFileUpload {
  */
 class StreamFileDownload {
     private fd: number | null = null;
-    private name: string;
-    private filePath: string;
-    private expectedSize: number;
+    private stagedPath: string | null = null;
     private bytesReceived = 0;
-    private onProgress: (bytes: number) => void;
     private cancelled = false;
+    private closed = false;
     private signal = requestContext.getStore();
 
-    constructor(filePath: string, size: number, onProgress?: (bytes: number) => void) {
-        this.name = path.basename(filePath);
-        this.filePath = filePath;
-        this.expectedSize = size;
-        this.onProgress = onProgress || (() => { });
-    }
+    constructor(private filePath: string, private expectedSize: number, private onProgress: (bytes: number) => void = () => {}) {}
 
     open(): void {
-        if (this.fd === null) {
-            // Ensure directory exists
-            const dir = path.dirname(this.filePath);
-            if (!fs.existsSync(dir)) {
-                fs.mkdirSync(dir, { recursive: true });
-            }
-            // Open for writing, create if not exists, truncate if exists
-            this.fd = fs.openSync(this.filePath, 'w');
-        }
+        if (this.isCancelled() || this.closed) throw new Error('Transfer cancelled or closed');
+        if (this.fd !== null) return;
+        fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+        const stagedPath = path.join(path.dirname(this.filePath), `.tabby-download-${randomUUID()}.tmp`);
+        this.fd = fs.openSync(stagedPath, 'wx', 0o600);
+        this.stagedPath = stagedPath;
     }
 
-    getName(): string { return this.name; }
+    getName(): string { return path.basename(this.filePath); }
     getSize(): number { return this.expectedSize; }
     getMode(): number { return 0o644; }
     getCompletedBytes(): number { return this.bytesReceived; }
-    isComplete(): boolean { return this.bytesReceived >= this.expectedSize; }
-    isCancelled(): boolean { return this.cancelled; }
+    isComplete(): boolean { return this.closed && !this.isCancelled() && this.bytesReceived === this.expectedSize; }
+    isCancelled(): boolean { return this.cancelled || !!this.signal?.aborted; }
 
     cancel(): void {
         this.cancelled = true;
-        this.close();
+        try { this.close(); } finally {
+            if (this.stagedPath) {
+                fs.unlinkSync(this.stagedPath);
+                this.stagedPath = null;
+            }
+        }
     }
 
     async write(buffer: Uint8Array): Promise<void> {
-        if (this.cancelled || this.signal?.aborted) throw new Error('Transfer cancelled');
+        if (this.isCancelled() || this.closed) throw new Error('Transfer cancelled or closed');
         if (this.fd === null) this.open();
-
         if (this.bytesReceived + buffer.length > this.expectedSize) throw new Error('Remote file grew beyond the approved download size.');
-        fs.writeSync(this.fd!, buffer);
-        this.bytesReceived += buffer.length;
+        let written = 0;
+        while (written < buffer.length) {
+            const bytes = fs.writeSync(this.fd!, buffer, written, buffer.length - written);
+            if (bytes === 0) throw new Error('Could not write download staging file');
+            written += bytes;
+            this.bytesReceived += bytes;
+        }
         this.onProgress(this.bytesReceived);
     }
 
-    // Deprecated: No longer needed as we write correctly to disk
-    getData(): Uint8Array {
-        return new Uint8Array(0);
+    getData(): Uint8Array { return new Uint8Array(0); }
+
+    /** Tabby closes on EOF. Seal staging here; only the successful tool commits it. */
+    close(): void {
+        if (this.closed) return;
+        // Empty downloads still need a staging file, after the backend reaches EOF.
+        if (!this.isCancelled() && this.fd === null) this.open();
+        this.closed = true;
+        if (this.fd !== null) {
+            const fd = this.fd;
+            this.fd = null;
+            try { if (!this.isCancelled()) fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        }
     }
 
-    close(): void {
-        if (this.fd !== null) {
-            try {
-                fs.closeSync(this.fd);
-            } catch (e) {
-                // Ignore close errors
-            }
-            this.fd = null;
-        }
+    commit(): void {
+        if (!this.isComplete() || !this.stagedPath) throw new Error('Download is incomplete');
+        fs.renameSync(this.stagedPath, this.filePath);
+        this.stagedPath = null;
     }
 }

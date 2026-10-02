@@ -129,7 +129,8 @@ export async function uninstallHub(config: HubConfig, options: Omit<InstallOptio
   return { removed: [target, destination], statePurged: options.purge === true };
 }
 export async function doctor(config: HubConfig): Promise<Array<{ name: string; ok: boolean; detail: string }>> {
-  const checks = [{ name: 'runtime', ok: Number(process.versions.node.split('.')[0]) >= 24, detail: process.versions.node }];
+  const [major, minor, patch] = process.versions.node.split('.').map(Number);
+  const checks = [{ name: 'runtime', ok: major > 24 || (major === 24 && (minor > 21 || (minor === 21 && patch >= 0))), detail: process.versions.node }];
   for (const file of ['config.json', 'satellite.json']) {
     const p = path.join(config.stateDir, file);
     try {

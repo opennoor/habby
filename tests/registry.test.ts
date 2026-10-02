@@ -59,6 +59,32 @@ test('window discovery withholds transfer details without file-read permission',
   } finally { registry.close(); }
 });
 
+test('excluded windows reveal neither their topology nor their existence through routing errors', async () => {
+  const registry = new WindowRegistry(); const windowId = randomUUID();
+  registry.register({ type: 'register', protocol: 1, windowId, metadata: {}, capabilities: ['exec_command'],
+    snapshot: { tabs: [{ id: 'tab' }], sessions: [{ id: 'pane', tabId: 'tab' }], profiles: [{ id: 'profile' }], transfers: [{ id: 'transfer' }] },
+  }, () => { throw new Error('Unauthorized dispatch'); });
+  const restricted = { ...LOCAL_PRINCIPAL, windows: [randomUUID()] };
+  try {
+    for (const id of [windowId, randomUUID()]) {
+      for (const [operation, key, localId, params] of [
+        ['exec_command', 'sessionId', 'pane', { command: 'true' }],
+        ['close_tab', 'tabId', 'tab', {}],
+        ['open_profile', 'profileId', 'profile', {}],
+        ['sftp_get_transfer_status', 'transferId', 'transfer', {}],
+      ] as const) {
+        for (const target of [localId, 'missing']) {
+          await assert.rejects(registry.call(operation, { ...params, [key]: globalId(id, target) }, restricted),
+            { code: 'FORBIDDEN', message: 'Window is not granted.' });
+        }
+      }
+      await assert.rejects(registry.call('exec_command', { windowId: id, command: 'true' }, restricted), { code: 'FORBIDDEN' });
+      await assert.rejects(registry.call('list_windows', { windowId: id }, restricted), { code: 'FORBIDDEN' });
+    }
+    await assert.rejects(registry.call('exec_command', { command: 'true', sessionId: globalId(windowId, 'missing') }, LOCAL_PRINCIPAL), { code: 'TARGET_NOT_FOUND' });
+  } finally { registry.close(); }
+});
+
 test('disconnected mutations have unknown outcome and never auto-replay', async () => {
   const registry = new WindowRegistry();
   const windowId = randomUUID();

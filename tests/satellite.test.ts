@@ -27,6 +27,10 @@ test('command markers survive arbitrary output chunk boundaries and ignore comma
     for (const char of stream) { result = capture.feed(char); if (result) break; }
     assert.deepEqual(result, { output: 'hello', exitCode: 7, truncated: false });
 });
+test('Fish command text is quoted independently of the completion markers', () => {
+    const wrapper = commandWrapper("printf '%s\\n' 'a\\b'\nprintf \"unterminated", 'fish', 'abc');
+    assert.equal(wrapper.text, "printf '\\n%s%s\\n' '__TABBY_abc_' 'START__'; eval 'printf \\'%s\\\\n\\' \\'a\\\\b\\'\nprintf \"unterminated'; set -l tabby_hub_abc $status; printf '\\n%s%s:%s\\n' '__TABBY_abc_' 'END__' $tabby_hub_abc");
+});
 test('output cursors preserve arbitrary bytes, report eviction and reject ahead cursors', async () => {
     const ring = new OutputRings(8, 16);
     ring.append('one', Buffer.from([0xff, 0, 0xfe]));
@@ -59,6 +63,35 @@ test('long polls wake on output and cancel when disconnected', async () => {
     controller.abort();
     await assert.rejects(cancelled, /cancelled/);
     ring.dispose();
+});
+test('total output eviction wakes live session polls with a gap and a fresh cursor', async () => {
+    const ring = new OutputRings(8, 8);
+    try {
+        ring.append('one', 'original');
+        const original = await ring.read('one');
+        const pending = ring.read('one', original.cursor, 65536, 25000);
+        ring.append('two', 'other');
+        const evicted = await timeout(pending);
+        assert.equal(evicted.gap, true);
+        assert.equal(evicted.bytes, 0);
+        assert.notEqual(evicted.cursor.split(':')[0], original.cursor.split(':')[0]);
+        assert.equal((ring as any).rings.size, 2);
+        assert.equal([...((ring as any).rings.values())].reduce((sum: number, r: any) => sum + r.data.length, 0), 8);
+        assert.deepEqual(await timeout(ring.read('one', original.cursor, 65536, 25000)), evicted);
+        ring.append('one', 'next');
+        const resumed = await ring.read('one', evicted.cursor);
+        assert.equal(resumed.gap, false);
+        assert.equal(Buffer.from(resumed.data, 'base64').toString(), 'next');
+        const closed = ring.read('one', resumed.cursor, 65536, 25000);
+        ring.close('one');
+        await assert.rejects(timeout(closed), /Terminal session closed/);
+        assert.equal((ring as any).rings.has('one'), false);
+        const remaining = await ring.read('two');
+        const disposed = ring.read('two', remaining.cursor, 65536, 25000);
+        ring.dispose();
+        await assert.rejects(timeout(disposed), /Terminal session closed/);
+        assert.equal((ring as any).rings.size, 0);
+    } finally { ring.dispose(); }
 });
 
 import { createServer } from 'node:https';
@@ -152,6 +185,24 @@ test('TLS SPKI mismatch blocks authentication credential before websocket upgrad
 });
 
 import { execFileSync } from 'node:child_process';
+test('Fish completion survives malformed commands and preserves shell state', t => {
+    try { execFileSync('fish', ['--version'], { stdio: 'pipe' }); }
+    catch { t.skip('fish runtime unavailable on this host'); return; }
+    for (const command of ["printf 'unterminated", 'if', 'printf hello; )']) {
+        const wrapper = commandWrapper(command, 'fish');
+        const stream = execFileSync('fish', ['--no-config', '-c', wrapper.text], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+        const result = new CommandCapture(wrapper.start, wrapper.end).feed(stream);
+        assert.ok(result, 'Malformed commands must still emit a completion marker');
+        assert.notEqual(result.exitCode, 0);
+    }
+    const quoted = commandWrapper("printf '%s\\n' \"a quote: ' and UTF-8: café\"\nprintf '%s\\n' 'a\\b'; false", 'fish');
+    const stream = execFileSync('fish', ['--no-config', '-c', quoted.text], { encoding: 'utf8' });
+    assert.deepEqual(new CommandCapture(quoted.start, quoted.end).feed(stream), { output: "a quote: ' and UTF-8: café\na\\b\n", exitCode: 1, truncated: false });
+    const state = commandWrapper('set -g tabby_test_state retained', 'fish');
+    const followup = commandWrapper('printf %s $tabby_test_state', 'fish');
+    const persistent = execFileSync('fish', ['--no-config', '-c', `${state.text}\n${followup.text}`], { encoding: 'utf8' });
+    assert.equal(new CommandCapture(followup.start, followup.end).feed(persistent)?.output, 'retained');
+});
 test('POSIX wrapper runs real shell command and captures native exit status', { skip: process.platform === 'win32' }, () => {
     const wrapper = commandWrapper("printf '%s\\n' \"a quote: ' and UTF-8: café\"; false", 'sh');
     const stream = execFileSync('/bin/bash', ['-c', wrapper.text], { encoding: 'utf8' });

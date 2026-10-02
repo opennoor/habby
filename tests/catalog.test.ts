@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TOOLS, TOOL_BY_NAME, authorize } from '../shared/catalog.js';
 import { LOCAL_PRINCIPAL } from '../shared/protocol.js';
+import path from 'node:path';
+import os from 'node:os';
 
 test('full catalog exposes 36 original tools and both Hub additions', () => {
   assert.equal(TOOLS.length, 38);
@@ -15,6 +17,7 @@ test('full catalog exposes 36 original tools and both Hub additions', () => {
   assert.deepEqual(TOOLS.map(tool => tool.name).sort(), [...original, 'list_windows', 'read_terminal_output'].sort());
   for (const tool of TOOLS) authorize(LOCAL_PRINCIPAL, tool.name);
   assert.equal(TOOL_BY_NAME.get('exec_command')?.schema.safeParse({ command: 'whoami' }).success, true);
+  assert.equal(TOOL_BY_NAME.get('sftp_list_transfers')?.schema.safeParse({ status: 'unknown' }).success, true);
 });
 test('scopes distinguish reads, shell writes and host-file transfers', () => {
   const read = { id: 'reader', scopes: ['terminal:read', 'files:read'] };
@@ -22,4 +25,29 @@ test('scopes distinguish reads, shell writes and host-file transfers', () => {
   assert.throws(() => authorize(read, 'exec_command'));
   assert.throws(() => authorize(read, 'sftp_upload'));
   assert.throws(() => authorize(read, 'get_session_environment', { activeProbe: true }));
+});
+
+test('target defaults preserve tool-specific required fields and descriptions', () => {
+  for (const [name, key] of [['focus_pane', 'sessionId'], ['sftp_get_transfer_status', 'transferId'], ['sftp_cancel_transfer', 'transferId']]) {
+    const schema = TOOL_BY_NAME.get(name)!.schema;
+    assert.equal(schema.safeParse({}).success, false, name);
+    assert.equal(schema.safeParse({ [key]: 'window/target' }).success, true, name);
+    assert.ok(schema.shape[key].description, name);
+  }
+  assert.equal(TOOL_BY_NAME.get('send_input')!.schema.safeParse({ input: 'hello' }).success, true);
+});
+
+test('host upload and download paths must be absolute on this platform', () => {
+  for (const name of ['sftp_upload', 'sftp_download']) {
+    const schema = TOOL_BY_NAME.get(name)!.schema;
+    for (const localPath of ['', 'file.txt', './file.txt', '../file.txt']) {
+      assert.equal(schema.safeParse({ localPath, remotePath: '/remote/file' }).success, false, `${name}: ${localPath}`);
+    }
+    assert.equal(schema.safeParse({ localPath: path.join(os.tmpdir(), 'file.txt'), remotePath: '/remote/file' }).success, true);
+    if (process.platform === 'win32') {
+      assert.equal(schema.safeParse({ localPath: 'C:\\files\\file.txt', remotePath: '/remote/file' }).success, true);
+      assert.equal(schema.safeParse({ localPath: '\\\\server\\share\\file.txt', remotePath: '/remote/file' }).success, true);
+      assert.equal(schema.safeParse({ localPath: 'C:file.txt', remotePath: '/remote/file' }).success, false);
+    }
+  }
 });

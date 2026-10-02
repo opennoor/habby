@@ -71,4 +71,11 @@ test('doctor rejects an unrelated HTTP200 process occupying the configured port'
   assert.equal((await doctor(config)).find(check => check.name === 'hub')!.ok, false);
   correct = true;
   assert.equal((await doctor(config)).find(check => check.name === 'hub')!.ok, true);
+  const descriptor = Object.getOwnPropertyDescriptor(process.versions, 'node')!;
+  try {
+    for (const [version, supported] of [['23.99.99', false], ['24.0.0', false], ['24.20.9', false], ['24.21.0', true], ['24.21.1', true], ['24.22.0', true], ['25.0.0', true]] as const) {
+      Object.defineProperty(process.versions, 'node', { ...descriptor, value: version });
+      assert.equal((await doctor(config)).find(check => check.name === 'runtime')!.ok, supported, version);
+    }
+  } finally { Object.defineProperty(process.versions, 'node', descriptor); }
 });

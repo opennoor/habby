@@ -1,6 +1,7 @@
 // Adapted from GentlemanHu/Tabby-MCP (MIT, copyright 2026 GentlemanHu).
 // Source revision 86a52fdfadb724959929f052c1fc89a45c9f1b0f. See THIRD_PARTY_NOTICES.md.
 import { z } from 'zod4';
+import path from 'node:path';
 import { HubError, type Scope, type Principal } from './protocol.js';
 
 const sessionSchema = { sessionId: z.string().optional(), tabIndex: z.number().optional(), title: z.string().optional(), profileName: z.string().optional() };
@@ -8,7 +9,7 @@ const targetShape = { windowId: z.string().uuid().optional(), tabId: z.string().
   sessionId: z.string().max(512).optional(), profileId: z.string().max(512).optional(),
   transferId: z.string().max(512).optional() };
 function targets(schema: z.ZodObject<any>): z.ZodObject<any> {
-  const shape = { ...schema.shape, ...targetShape };
+  const shape = { ...targetShape, ...schema.shape };
   if (shape.tabIndex) shape.tabIndex = shape.tabIndex.optional();
   return z.object(shape).strict();
 }
@@ -225,9 +226,10 @@ For text content only. Use sftp_upload for binary files.`, schema: targets(z.obj
 
 Example: { "localPath": "/home/user/file.txt", "remotePath": "/tmp/uploaded.txt" }
 
-Max upload size is configurable in Tabby Settings → MCP → SFTP.`, schema: targets(z.object({
+Max upload size is configurable in Tabby Settings → MCP → SFTP.
+An interrupted upload can report OUTCOME_UNKNOWN: the remote backend may still commit. Inspect the remote file before retrying.`, schema: targets(z.object({
                 ...sessionSchema,
-                localPath: z.string().describe('REQUIRED: Absolute path to local file (e.g., /home/user/file.txt)'),
+                localPath: z.string().refine(value => path.isAbsolute(value), 'Host file path must be absolute').describe('REQUIRED: Absolute path to local file (e.g., /home/user/file.txt)'),
                 remotePath: z.string().describe('REQUIRED: Remote destination path (e.g., /tmp/uploaded.txt)'),
                 sync: z.boolean().optional().describe('Wait for completion, default true. Set false to get transferId for async tracking')
             })), scopes: ['files:write', 'files:read'], aggregate: false },
@@ -243,16 +245,16 @@ Example: { "remotePath": "/tmp/remote.txt", "localPath": "/home/user/downloaded.
 Max download size is configurable in Tabby Settings → MCP → SFTP.`, schema: targets(z.object({
                 ...sessionSchema,
                 remotePath: z.string().describe('REQUIRED: Remote file path to download (e.g., /tmp/remote.txt)'),
-                localPath: z.string().describe('REQUIRED: Local destination path, must be absolute (e.g., /home/user/file.txt)'),
+                localPath: z.string().refine(value => path.isAbsolute(value), 'Host file path must be absolute').describe('REQUIRED: Local destination path, must be absolute (e.g., /home/user/file.txt)'),
                 sync: z.boolean().optional().describe('Wait for completion, default true. Set false to get transferId for async tracking')
             })), scopes: ['files:write', 'files:read'], aggregate: false },
   { name: 'sftp_get_transfer_status', description: 'Get status and progress of a file transfer task.', schema: targets(z.object({
                 transferId: z.string().describe('Transfer task ID from sftp_upload/sftp_download')
             })), scopes: ['files:read'], aggregate: false },
   { name: 'sftp_list_transfers', description: 'List all active and recent file transfers.', schema: targets(z.object({
-                status: z.enum(['all', 'active', 'completed', 'failed']).optional().describe('Filter by status')
+                status: z.enum(['all', 'active', 'completed', 'failed', 'unknown']).optional().describe('Filter by status')
             })), scopes: ['files:read'], aggregate: true },
-  { name: 'sftp_cancel_transfer', description: 'Cancel an active file transfer.', schema: targets(z.object({
+  { name: 'sftp_cancel_transfer', description: 'Request cancellation of an active file transfer. Started uploads may report an unknown remote outcome.', schema: targets(z.object({
                 transferId: z.string().describe('Transfer task ID to cancel')
             })), scopes: ['files:write'], aggregate: false },
   { name: 'list_windows', description: 'List every authorized Tabby window and its capabilities.',

@@ -99,12 +99,13 @@ export class WindowRegistry extends EventEmitter {
     const definition = TOOL_BY_NAME.get(operation);
     if (!definition) throw new HubError('UNKNOWN_TOOL', 'Unknown operation.');
     const params = definition.schema.parse(input) as Record<string, unknown>;
-    authorize(principal, operation, params);
+    authorize(principal, operation, params, params.windowId as string | undefined);
     if (operation === 'list_windows') return textResult({ windows: this.list(principal, params.windowId as string | undefined) });
     let resolvedId = params.windowId as string | undefined;
     for (const [key, kind] of Object.entries(targetKinds)) {
       if (params[key] === undefined) continue;
       const target = parseGlobalId(String(params[key]));
+      authorize(principal, operation, params, target.windowId);
       if (resolvedId && resolvedId !== target.windowId) throw new HubError('INVALID_TARGET', 'Targets belong to different windows.');
       resolvedId = target.windowId;
       const owner = this.windows.get(resolvedId);

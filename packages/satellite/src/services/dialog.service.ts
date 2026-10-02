@@ -109,6 +109,9 @@ export class DialogService implements OnDestroy {
 
             const panel = document.createElement('div');
             panel.className = 'mcp-dialog-panel';
+            panel.setAttribute('role', 'dialog');
+            panel.setAttribute('aria-modal', 'true');
+            panel.setAttribute('aria-label', title);
 
             const header = document.createElement('div');
             header.className = 'mcp-dialog-header';
