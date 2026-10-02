@@ -32,17 +32,27 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Could not grant second user fixture read access.' }
   & icacls.exe $projectRoot /grant "$($env:COMPUTERNAME)\${user}:(OI)(CI)RX" /T /Q | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Could not grant standard user code/dependency read access.' }
-  $env:TEMP = $testRoot
-  $env:TMP = $testRoot
-  $env:TABBY_HUB_REQUIRE_STANDARD_USER = '1'
-  $env:TABBY_HUB_NATIVE_TEST_ROOT = $testRoot
-  $env:TABBY_HUB_ACL_PROBE_MANIFEST = $manifestPath
-  Invoke-StandardUser $user $node '--import tsx --test tests/windows-state.test.ts' 'owner'
+  # LoadUserProfile creates the user's environment; set test variables in that child.
+  $owner = @'
+param([string]$NodePath)
+$ErrorActionPreference='Stop'
+$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
+$env:TEMP=$PSScriptRoot
+$env:TMP=$PSScriptRoot
+$env:TABBY_HUB_REQUIRE_STANDARD_USER='1'
+$env:TABBY_HUB_NATIVE_TEST_ROOT=$PSScriptRoot
+$env:TABBY_HUB_ACL_PROBE_MANIFEST=Join-Path $PSScriptRoot 'probe.json'
+& $NodePath --import tsx --test tests/windows-state.test.ts
+exit $LASTEXITCODE
+'@
+  $ownerPath = Join-Path $testRoot 'owner.ps1'
+  Set-Content -LiteralPath $ownerPath -Value $owner -Encoding UTF8
+  Invoke-StandardUser $user $powershell "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ownerPath`" -NodePath `"$node`"" 'owner'
   $probe = @'
 $ErrorActionPreference='Stop'
 $principal=New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
 if($principal.IsInRole([System.Security.Principal.WindowsBuiltinRole]::Administrator)) { throw 'Reader must be a standard user.' }
-$manifest=Get-Content -Raw -LiteralPath $env:TABBY_HUB_ACL_PROBE_MANIFEST | ConvertFrom-Json
+$manifest=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'probe.json') | ConvertFrom-Json
 foreach($file in @($manifest.file,$manifest.database)) {
   try { [IO.File]::ReadAllText($file) | Out-Null; throw 'Second user read private state.' }
   catch { if(-not ($_.Exception.GetBaseException() -is [UnauthorizedAccessException])) { throw } }
@@ -57,7 +67,7 @@ exit 0
 } finally {
   try {
     if (Test-Path -LiteralPath $manifestPath) {
-      $cleanup = '$ErrorActionPreference="Stop"; $manifest=Get-Content -Raw -LiteralPath $env:TABBY_HUB_ACL_PROBE_MANIFEST | ConvertFrom-Json; Remove-Item -LiteralPath $manifest.stateDir -Recurse -Force'
+      $cleanup = '$ErrorActionPreference="Stop"; $manifest=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "probe.json") | ConvertFrom-Json; Remove-Item -LiteralPath $manifest.stateDir -Recurse -Force'
       $cleanupPath = Join-Path $testRoot 'cleanup.ps1'
       Set-Content -LiteralPath $cleanupPath -Value $cleanup -Encoding UTF8
       Invoke-StandardUser $user $powershell "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cleanupPath`"" 'cleanup'
