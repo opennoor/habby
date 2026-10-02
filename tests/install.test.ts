@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, stat, access, rm, readdir, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, stat, access, rm, readdir, chmod, symlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import path from 'node:path';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { installHub, uninstallHub, defaultPluginDir, renderSupervisor, doctor } from '../packages/hub/src/install.js';
+import { PRIVATE_STATE_FILES, privateDirectory } from '../packages/hub/src/state.js';
 
 test('all supervisor definitions quote paths and enforce restart/session limits', () => {
   const linux = renderSupervisor('linux', '/node space', '/entry%file.js', '/state"dir');
@@ -112,6 +113,18 @@ test('CLI doctor reports missing, malformed and unsafe state without initializin
   }
   assert.equal(await readFile(path.join(stateDir, 'config.json'), 'utf8'), original);
   assert.deepEqual(await readdir(stateDir), ['config.json']);
+  if (process.platform !== 'win32') {
+    const outside = path.join(tmp, 'outside-config.json'); await writeFile(outside, original, { mode: 0o600 });
+    await rm(path.join(stateDir, 'config.json')); await symlink(outside, path.join(stateDir, 'config.json'));
+    assert.match((await run())[0].detail, /regular file, not a link/);
+    assert.equal(await readFile(outside, 'utf8'), original);
+    await rm(stateDir, { recursive: true });
+    const outsideDirectory = path.join(tmp, 'outside-state'); await mkdir(outsideDirectory);
+    await writeFile(path.join(outsideDirectory, 'config.json'), original);
+    await symlink(outsideDirectory, stateDir);
+    assert.match((await run())[0].detail, /real directory/);
+    assert.deepEqual(await readdir(outsideDirectory), ['config.json']);
+  }
 });
 
 test('Windows installer selects supported architectures and rejects unsupported ones before installation', async t => {
@@ -159,4 +172,57 @@ test('Unix supervisor upgrades repair existing writable units and plists', { ski
     } });
     assert.equal((await stat(installed.servicePath)).mode & 0o777, 0o600, platform);
   }
+});
+
+test('Unix doctor diagnoses the entire state inventory without repairing mode, ownership or links', { skip: process.platform === 'win32' }, async t => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-doctor-inventory-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const names = PRIVATE_STATE_FILES.map(file => file.name);
+  for (const name of names) await writeFile(path.join(tmp, name), '{}', { mode: 0o600 });
+  const config = { stateDir: tmp, trustedPort: 1, satellitePort: 3002, publicPort: 3003 };
+  assert.ok((await doctor(config)).filter(check => check.name !== 'runtime' && check.name !== 'hub').every(check => check.ok));
+  for (const name of ['state-directory', ...names]) {
+    const file = name === 'state-directory' ? tmp : path.join(tmp, name);
+    const mode = name === 'state-directory' ? 0o755 : 0o644;
+    await chmod(file, mode);
+    assert.equal((await doctor(config)).find(check => check.name === name)?.ok, false, name);
+    assert.equal((await stat(file)).mode & 0o777, mode, 'Diagnosis must not repair permissions.');
+    await chmod(file, name === 'state-directory' ? 0o700 : 0o600);
+  }
+  // Changing the observed UID exercises actual ownership comparison without requiring root.
+  const getuid = process.getuid!;
+  try {
+    process.getuid = () => getuid() + 1;
+    for (const check of (await doctor(config)).filter(check => check.name !== 'runtime' && check.name !== 'hub')) assert.equal(check.ok, false, check.name);
+  } finally { process.getuid = getuid; }
+  const outside = path.join(tmp, 'outside'); await writeFile(outside, 'unchanged', { mode: 0o600 });
+  await rm(path.join(tmp, 'task.xml')); await symlink(outside, path.join(tmp, 'task.xml'));
+  assert.equal((await doctor(config)).find(check => check.name === 'task.xml')?.ok, false);
+  await assert.rejects(privateDirectory(tmp), /regular files, not links/);
+  assert.equal(await readFile(outside, 'utf8'), 'unchanged');
+  await rm(path.join(tmp, 'task.xml'));
+  const optionalAbsent = await doctor(config);
+  assert.equal(optionalAbsent.some(check => check.name === 'task.xml'), false);
+  await rm(path.join(tmp, 'secrets.json'));
+  assert.equal((await doctor(config)).find(check => check.name === 'secrets.json')?.ok, false);
+});
+
+test('Unix installer replaces private control records and supervisor links without touching their target', { skip: process.platform === 'win32' }, async t => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-control-upgrade-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const source = path.join(tmp, 'source'); await mkdir(path.join(source, 'dist'), { recursive: true });
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite' }));
+  await writeFile(path.join(source, 'dist', 'index.js'), 'plugin');
+  const stateDir = path.join(tmp, 'state'); await mkdir(stateDir); await writeFile(path.join(stateDir, 'satellite.json'), '{}');
+  const options = { config: { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, platform: 'linux' as const,
+    home: tmp, env: {}, pluginSource: source, start: false, exec: async () => {} };
+  const installed = await installHub(options);
+  await chmod(path.join(stateDir, 'installation.json'), 0o666);
+  const outside = path.join(tmp, 'outside'); await writeFile(outside, 'unchanged');
+  await rm(installed.servicePath); await symlink(outside, installed.servicePath);
+  await installHub(options);
+  assert.equal(await readFile(outside, 'utf8'), 'unchanged');
+  assert.equal((await stat(installed.servicePath)).mode & 0o777, 0o600);
+  assert.equal((await stat(path.join(stateDir, 'installation.json'))).mode & 0o777, 0o600);
+  assert.equal((await stat(stateDir)).mode & 0o777, 0o700);
 });

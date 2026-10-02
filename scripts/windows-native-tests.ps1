@@ -53,11 +53,14 @@ $ErrorActionPreference='Stop'
 $principal=New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
 if($principal.IsInRole([System.Security.Principal.WindowsBuiltinRole]::Administrator)) { throw 'Reader must be a standard user.' }
 $manifest=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'probe.json') | ConvertFrom-Json
-foreach($file in @($manifest.file,$manifest.database)) {
+$files=@($manifest.files)
+if($files.Count -ne 7) { throw 'Expected seven state/control file probes.' }
+foreach($file in $files) {
+  if(-not ($file -is [string]) -or [string]::IsNullOrWhiteSpace($file)) { throw 'Missing state/control file probe path.' }
   try { [IO.File]::ReadAllText($file) | Out-Null; throw 'Second user read private state.' }
   catch { if(-not ($_.Exception.GetBaseException() -is [UnauthorizedAccessException])) { throw } }
 }
-Write-Output 'PASS: second standard user cannot read secrets or authentication database by full path.'
+Write-Output 'PASS: second standard user cannot read sensitive state or control files by full path.'
 exit 0
 '@
   # Credentialed process creation limits the command line to 1024 characters.

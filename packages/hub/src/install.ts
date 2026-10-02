@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { access, mkdir, readFile, writeFile, cp, rename, rm, lstat, chmod } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile, cp, rename, rm, lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HubConfig } from '../../../shared/protocol.js';
+import { PRIVATE_STATE_FILES, privateDirectory, writePrivateFile, writePrivateJson } from './state.js';
 
 type Platform = 'linux' | 'darwin' | 'win32';
 type Exec = (file: string, args: string[]) => Promise<unknown>;
@@ -62,6 +63,7 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
   const manifest = JSON.parse(await readFile(path.join(source, 'package.json'), 'utf8'));
   if (manifest.name !== PLUGIN) throw new Error('Unexpected satellite package.');
   await access(path.join(source, 'dist', 'index.js'));
+  await privateDirectory(config.stateDir);
   await access(path.join(config.stateDir, 'satellite.json'));
   const pluginDir = path.resolve(options.pluginDir ?? defaultPluginDir(platform, home, env));
   const destination = path.join(pluginDir, 'node_modules', PLUGIN);
@@ -79,12 +81,11 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
     try { await rename(staging, destination); } catch (error) { if (await exists(backup)) await rename(backup, destination); throw error; }
     await rm(backup, { recursive: true, force: true });
   } finally { await rm(staging, { recursive: true, force: true }); }
-  await writeFile(path.join(config.stateDir, 'installation.json'), JSON.stringify({ pluginDir }), { mode: 0o600 });
+  await writePrivateJson(path.join(config.stateDir, 'installation.json'), { pluginDir });
   const target = servicePath(platform, home, config.stateDir, env);
   await mkdir(path.dirname(target), { recursive: true });
   const content = renderSupervisor(platform, options.executable ?? process.execPath, options.entrypoint ?? fileURLToPath(new URL('./cli.js', import.meta.url)), config.stateDir);
-  await writeFile(target, platform === 'win32' ? Buffer.from('\uFEFF' + content, 'utf16le') : content, { mode: 0o600 });
-  if (platform !== 'win32') await chmod(target, 0o600);
+  await writePrivateFile(target, platform === 'win32' ? Buffer.from('\uFEFF' + content, 'utf16le') : content);
   const start = options.start !== false;
   if (platform === 'linux') {
     await exec('systemctl', ['--user', 'daemon-reload']);
@@ -132,10 +133,10 @@ export async function uninstallHub(config: HubConfig, options: Omit<InstallOptio
 export async function doctor(config: HubConfig): Promise<Array<{ name: string; ok: boolean; detail: string }>> {
   const [major, minor, patch] = process.versions.node.split('.').map(Number);
   const checks = [{ name: 'runtime', ok: major > 24 || (major === 24 && (minor > 21 || (minor === 21 && patch >= 0))), detail: process.versions.node }];
-  const entries = process.platform === 'win32' ? [
+  const entries = [
     { name: 'state-directory', p: config.stateDir, directory: true },
-    ...['config.json', 'satellite.json', 'secrets.json', 'auth.sqlite', 'auth.sqlite-wal', 'auth.sqlite-shm'].map(name => ({ name, p: path.join(config.stateDir, name), optional: name.startsWith('auth.sqlite') })),
-  ] : ['config.json', 'satellite.json'].map(name => ({ name, p: path.join(config.stateDir, name) }));
+    ...PRIVATE_STATE_FILES.map(file => ({ ...file, p: path.join(config.stateDir, file.name) })),
+  ];
   let privatePaths: Record<string, boolean> = {};
   if (process.platform === 'win32') {
     const script = `$ErrorActionPreference='Stop'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
@@ -162,7 +163,7 @@ export async function doctor(config: HubConfig): Promise<Array<{ name: string; o
     const { name, p } = entry;
     try {
       const stat = await lstat(p);
-      const privateFile = process.platform === 'win32' ? privatePaths[p] === true : (stat.mode & 0o077) === 0;
+      const privateFile = process.platform === 'win32' ? privatePaths[p] === true : (stat.mode & 0o077) === 0 && stat.uid === process.getuid!();
       const expectedType = 'directory' in entry && entry.directory ? stat.isDirectory() : stat.isFile();
       checks.push({ name, ok: expectedType && !stat.isSymbolicLink() && privateFile, detail: privateFile ? p : `Permissions must be private: ${p}` });
     } catch (error) {

@@ -1,4 +1,4 @@
-import { chmod, link, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
@@ -13,11 +13,24 @@ const configSchema = z.object({ stateDir: z.string(), trustedPort: port, satelli
   publicUrl: z.string().url().optional(), trustedHosts: z.array(z.string().max(253)).max(16).optional() }).strict();
 export interface HubState { config: HubConfig; trust: SatelliteTrust; privateKey: string; adminCredential: string }
 
+// The bounded set of state, credential and supervisor files this Hub creates or reuses.
+export const PRIVATE_STATE_FILES = [
+  { name: 'config.json' }, { name: 'satellite.json' }, { name: 'secrets.json' },
+  ...['auth.sqlite', 'auth.sqlite-wal', 'auth.sqlite-shm', 'installation.json', 'task.xml', 'hub.stderr.log'].map(name => ({ name, optional: true })),
+];
+
 export async function privateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const stat = await lstat(path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('State directory must be a real directory.');
   if (process.getuid && stat.uid !== process.getuid()) throw new Error('State directory must belong to the current user.');
+  for (const { name } of PRIVATE_STATE_FILES) {
+    try {
+      const file = await lstat(join(path, name));
+      if (!file.isFile() || file.isSymbolicLink()) throw new Error('State files must be regular files, not links.');
+      if (process.getuid && file.uid !== process.getuid()) throw new Error('State files must belong to the current user.');
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
   if (process.platform === 'win32') {
     const script = `$ErrorActionPreference='Stop'
       $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
@@ -29,7 +42,7 @@ export async function privateDirectory(path: string): Promise<void> {
       $acl.AddAccessRule($rule)
       # Persist only owner/DACL changes; Set-Acl also requests privileged SACL writes.
       [IO.Directory]::SetAccessControl($env:TABBY_HUB_PRIVATE_STATE_DIR,$acl)
-      foreach($name in @('config.json','satellite.json','secrets.json','auth.sqlite','auth.sqlite-wal','auth.sqlite-shm')) {
+      foreach($name in (ConvertFrom-Json $env:TABBY_HUB_PRIVATE_STATE_FILES)) {
         $file=Join-Path $env:TABBY_HUB_PRIVATE_STATE_DIR $name
         if(Test-Path -LiteralPath $file) {
           $item=Get-Item -Force -LiteralPath $file
@@ -42,17 +55,27 @@ export async function privateDirectory(path: string): Promise<void> {
         }
       }`;
     await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-      { windowsHide: true, env: { ...process.env, TABBY_HUB_PRIVATE_STATE_DIR: path } });
+      { windowsHide: true, env: { ...process.env, TABBY_HUB_PRIVATE_STATE_DIR: path,
+        TABBY_HUB_PRIVATE_STATE_FILES: JSON.stringify(PRIVATE_STATE_FILES.map(file => file.name)) } });
   } else await chmod(path, 0o700);
 }
-export async function writePrivateJson(path: string, value: unknown): Promise<void> {
+export async function writePrivateFile(path: string, content: string | Buffer): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
-  await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-  await rename(temporary, path);
-  if (process.platform !== 'win32') await chmod(path, 0o600);
+  try {
+    await writeFile(temporary, content, { mode: 0o600, flag: 'wx' });
+    if (process.platform !== 'win32') await chmod(temporary, 0o600);
+    await rename(temporary, path);
+  } finally { await rm(temporary, { force: true }); }
+}
+export async function writePrivateJson(path: string, value: unknown): Promise<void> {
+  await writePrivateFile(path, JSON.stringify(value, null, 2) + '\n');
 }
 export async function readConfig(stateDir = defaultStateDir()): Promise<HubConfig> {
   stateDir = resolve(stateDir);
+  const directory = await lstat(stateDir);
+  if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error('State directory must be a real directory.');
+  const file = await lstat(join(stateDir, 'config.json'));
+  if (!file.isFile() || file.isSymbolicLink()) throw new Error('Configuration must be a regular file, not a link.');
   const config = configSchema.parse(JSON.parse(await readFile(join(stateDir, 'config.json'), 'utf8')));
   if (resolve(config.stateDir) !== stateDir) throw new Error('Configuration state directory mismatch.');
   validatePublicUrl(config.publicUrl);
