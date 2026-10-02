@@ -28,8 +28,33 @@ export function commandWrapper(command: string, shell: Shell, nonce = randomUUID
         // Out-Default flushes PowerShell's delayed object formatting before the completion marker.
         text = `[Console]::WriteLine(('${head}'+'START__')); $global:LASTEXITCODE=0; try { . ([ScriptBlock]::Create('${escaped}')) | Out-Default } catch { $global:${status}_ok=$false; $global:${status}_exit=1; $_ | Out-Default }; if (-not $global:${status}_ok -and $global:${status}_exit -eq 0) { $global:${status}_exit=1 }; [Console]::WriteLine(); [Console]::WriteLine(('${head}'+'END__:'+ $global:${status}_exit)); Remove-Variable -Scope Global -Name '${status}_ok','${status}_exit' -ErrorAction SilentlyContinue`;
     } else if (shell === 'cmd') {
-        // Separate input lines: %errorlevel% expands after the command, unlike one compound line.
-        text = `echo ${start}\r\n${command}\r\necho.\r\necho ${end}:%errorlevel%`;
+        // A child batch parser cannot consume the outer prompt's completion markers.
+        // Base64 staging keeps quotes/metacharacters out of that parser and bounds each
+        // input line below CMD's 8191-character limit, including for remote Windows panes.
+        const payload = `tabby-hub-${nonce}.b64`, batch = `tabby-hub-${nonce}.cmd`;
+        const encoded = Buffer.from(command.replace(/\r\n|\r|\n/g, '\r\n'), 'utf8').toString('base64');
+        const chunks = encoded.match(/.{1,4096}/g) ?? [''];
+        const staging = chunks.map((chunk, index) => `${index ? '>>' : '>'} "%TEMP%\\${payload}" echo(${chunk}`).join('\r\n');
+        // Use .NET APIs only: Windows PowerShell 5.1 is present on supported Windows.
+        // Batch bytes follow the pane's console code page, without an encoding preamble.
+        const script = `$ErrorActionPreference='Stop'; $code=1; $created=$false;
+$p=[IO.Path]::Combine($env:TEMP,'${payload}'); $b=[IO.Path]::Combine($env:TEMP,'${batch}');
+try {
+    $command=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([IO.File]::ReadAllText($p)));
+    $bytes=[Console]::InputEncoding.GetBytes('@echo off'+[Environment]::NewLine+$command+[Environment]::NewLine);
+    $file=[IO.File]::Open($b,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); $created=$true;
+    try { $file.Write($bytes,0,$bytes.Length) } finally { $file.Dispose() }
+    $info=[Diagnostics.ProcessStartInfo]::new(); $info.FileName=$env:ComSpec;
+    $info.Arguments='/d /q /s /c ""'+$b+'""'; $info.UseShellExecute=$false;
+    $process=[Diagnostics.Process]::Start($info);
+    try { $process.WaitForExit(); $code=$process.ExitCode } finally { $process.Dispose() }
+} catch { [Console]::Error.WriteLine($_); $code=1 }
+finally { if ($created) { [IO.File]::Delete($b) }; [IO.File]::Delete($p) }
+exit $code`;
+        const launcher = Buffer.from(script, 'utf16le').toString('base64');
+        // CMD cwd/env changes stay in the child; send_input retains interactive state.
+        // Expand errorlevel on its own input line, before the fallback payload cleanup.
+        text = `echo ${start}\r\n${staging}\r\n"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -NonInteractive -EncodedCommand ${launcher}\r\necho.\r\necho ${end}:%errorlevel%\r\ndel /q "%TEMP%\\${payload}" >nul 2>&1`;
     } else {
         const escaped = command.replaceAll("'", "'\\''");
         text = `printf '\\n%s%s\\n' '${head}' 'START__'; eval '${escaped}'; tabby_hub_${nonce}=$?; printf '\\n%s%s:%s\\n' '${head}' 'END__' "$tabby_hub_${nonce}"`;

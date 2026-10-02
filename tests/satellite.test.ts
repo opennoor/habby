@@ -292,6 +292,33 @@ test('production handler catalog includes all 36 upstream tools', () => {
     const host = hostCategories();
     assert.equal(new Set([...host.terminal.mcpTools, ...host.tabs.mcpTools, ...host.sftp.mcpTools].map(tool => tool.name)).size, 36);
 });
+test('session metadata switches suppress only selected fields in enumeration and snapshots', async () => {
+    const host = hostCategories(), pane = new host.Terminal();
+    Object.assign(pane, { profile: { id: 'profile', name: 'private-profile', type: 'local' }, session: { pty: { pid: 123 }, cwd: '/private/cwd' } });
+    host.app.tabs = [pane];
+    const config = (host.terminal as any).config;
+    const service = new (loadSatelliteService())(host.app, config, { run: (callback: () => unknown) => callback() },
+        host.terminal, host.tabs, host.sftp, { windowID: 1 });
+    const tool = host.terminal.mcpTools.find((tool: any) => tool.name === 'get_session_list');
+    const enumerate = async () => JSON.parse((await tool.handler({})).content[0].text)[0];
+    try {
+        const defaults = await enumerate();
+        assert.equal(defaults.profile.id, 'profile'); assert.equal(defaults.pid, 123); assert.equal(defaults.cwd, '/private/cwd');
+        for (const [switchName, field] of [['includeProfileInfo', 'profile'], ['includePid', 'pid'], ['includeCwd', 'cwd']]) {
+            config.store.mcp = { sessionTracking: { [switchName]: false } };
+            const result = await enumerate();
+            assert.equal(field in result, false);
+            for (const other of ['profile', 'pid', 'cwd'].filter(name => name !== field)) assert.deepEqual(result[other], defaults[other]);
+            assert.equal(result.sessionId, defaults.sessionId);
+            const snapshot = JSON.parse(JSON.stringify(await service.snapshot()));
+            assert.equal('profileId' in snapshot.sessions[0], switchName !== 'includeProfileInfo');
+        }
+        config.store.mcp.sessionTracking = { includeProfileInfo: false, includePid: false, includeCwd: false };
+        const hidden = await enumerate();
+        for (const field of ['profile', 'pid', 'cwd']) assert.equal(field in hidden, false);
+        assert.equal(host.terminal.findSessionByLocator({ sessionId: defaults.sessionId }).tab, pane);
+    } finally { service.ngOnDestroy(); }
+});
 test('satellite split schema accepts directions and rejects unsupported layout ratios', () => {
     const host = hostCategories();
     const tool = host.tabs.mcpTools.find((tool: any) => tool.name === 'split_tab');
@@ -477,14 +504,21 @@ test('production SatelliteService rejects conflicting exact selectors before sel
         assert.equal(invoked[0].tabIndex, 1);
         await service.run('exec_command', { command: 'true', tabId: 'tab-b', sessionId: 'pane-b' }, protocol.LOCAL_PRINCIPAL, signal);
         assert.equal(invoked[1].sessionId, 'pane-b');
+        const beforeInvalid = invoked.length;
+        for (const timeout of [-1, 0, 0.5, 300001, Number.POSITIVE_INFINITY, Number.NaN]) {
+            await assert.rejects(service.run('exec_command', { command: 'true', sessionId: 'pane-b', timeout }, protocol.LOCAL_PRINCIPAL, signal));
+        }
+        assert.equal(invoked.length, beforeInvalid);
+        await service.run('exec_command', { command: 'true', sessionId: 'pane-b', timeout: 300000 }, protocol.LOCAL_PRINCIPAL, signal);
+        assert.equal(invoked.at(-1).timeout, 300000);
     } finally { service.ngOnDestroy(); }
 });
 
-test('production output routing closes lost sources and resumes with fresh output', async () => {
+test('production output routing rotates changed sources, closes lost sources and resumes fresh', async () => {
     const SatelliteService = loadSatelliteService();
     const { Subject } = await import('rxjs');
-    const source = new Subject<string>(), replacement = new Subject<string>(), destroyed = new Subject<void>();
-    const pane = { session: { output$: source as unknown }, destroyed };
+    const source = new Subject<string>(), direct = new Subject<string>(), replacement = new Subject<string>(), destroyed = new Subject<void>();
+    const pane = { session: { output$: source as unknown, binaryOutput$: undefined as unknown }, destroyed };
     const parent = {};
     const session = { sessionId: 'pane', tab: pane, tabParent: parent };
     const terminal = { mcpTools: [], findTerminalSessions: () => [session], findSessionByLocator: () => session };
@@ -494,15 +528,27 @@ test('production output routing closes lost sources and resumes with fresh outpu
         protocol.LOCAL_PRINCIPAL, new AbortController().signal)).content[0].text);
     try {
         await read(); source.next('old output');
-        const original = await read();
+        let original = await read();
         assert.equal(Buffer.from(original.data, 'base64').toString(), 'old output');
         assert.equal(source.observed, true); assert.equal(destroyed.observed, true);
+        const switching = read({ cursor: original.cursor, waitMs: 25000 });
+        pane.session.binaryOutput$ = direct;
+        const switched = await read({ cursor: original.cursor });
+        const awakened = await timeout(switching);
+        assert.equal(switched.gap, true); assert.equal(switched.bytes, 0);
+        assert.equal(awakened.gap, true); assert.equal(awakened.bytes, 0);
+        assert.equal(source.observed, false); assert.equal(direct.observed, true);
+        source.next('stale output'); direct.next('direct output');
+        original = await read({ cursor: switched.cursor });
+        assert.equal(Buffer.from(original.data, 'base64').toString(), 'direct output');
         const pending = read({ cursor: original.cursor, waitMs: 25000 });
         const closed = assert.rejects(timeout(pending), { code: 'SESSION_CLOSED' });
+        pane.session.binaryOutput$ = undefined;
         pane.session.output$ = undefined;
         await assert.rejects(read(), { code: 'UNSUPPORTED_STREAM' });
         await closed;
         assert.equal(source.observed, false); assert.equal(destroyed.observed, false);
+        assert.equal(direct.observed, false);
         await assert.rejects(read(), { code: 'UNSUPPORTED_STREAM' });
         source.next('stale output');
         pane.session.output$ = replacement;

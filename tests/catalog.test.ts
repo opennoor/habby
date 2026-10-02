@@ -24,6 +24,13 @@ test('split schema rejects unsupported ratios instead of silently ignoring them'
   for (const direction of ['left', 'right', 'top', 'bottom', 'horizontal', 'vertical']) assert.equal(schema.safeParse({ direction }).success, true);
   for (const ratio of [0, 0.2, 0.5, 0.9, 1]) assert.equal(schema.safeParse({ direction: 'right', ratio }).success, false);
 });
+test('command timeout accepts only bounded positive integer milliseconds', () => {
+  const schema = TOOL_BY_NAME.get('exec_command')!.schema;
+  for (const timeout of [-1, 0, 0.5, 300001, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NaN]) {
+    assert.equal(schema.safeParse({ command: 'echo hello', timeout }).success, false);
+  }
+  for (const timeout of [undefined, 1, 30000, 300000]) assert.equal(schema.safeParse({ command: 'echo hello', timeout }).success, true);
+});
 
 test('scopes distinguish reads, shell writes and host-file transfers', () => {
   const read = { id: 'reader', scopes: ['terminal:read', 'files:read'] };

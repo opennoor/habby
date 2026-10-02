@@ -46,7 +46,7 @@ export class SatelliteService implements SatelliteAdapter, OnDestroy {
         const profiles = payload(await this.tools.get('list_profiles')!.handler({}, {})).profiles ?? [];
         return {
             tabs: this.app.tabs.map((tab, index) => ({ id: this.tabs.getOrCreateTabId(tab), title: tab.title ?? '', tabIndex: index, active: tab.hasFocus })),
-            sessions: this.terminal.findTerminalSessions().map(session => ({ id: session.sessionId, tabId: this.tabs.getOrCreateTabId(session.tabParent), title: session.tab.title ?? '', tabIndex: session.tabIndex, paneIndex: session.paneIndex, isFocusedPane: session.isFocusedPane, profileId: (session.tab as any).profile?.id })),
+            sessions: this.terminal.findTerminalSessions().map(session => ({ id: session.sessionId, tabId: this.tabs.getOrCreateTabId(session.tabParent), title: session.tab.title ?? '', tabIndex: session.tabIndex, paneIndex: session.paneIndex, isFocusedPane: session.isFocusedPane, profileId: this.config.store.mcp?.sessionTracking?.includeProfileInfo !== false ? (session.tab as any).profile?.id : undefined })),
             profiles: profiles.map((profile: any) => ({ ...profile, id: profile.profileId, title: profile.name })),
             transfers: this.sftp.getTransfers().map(task => ({ id: task.id, status: task.status, sessionId: task.sessionId, progress: task.progress })),
         };
@@ -62,9 +62,9 @@ export class SatelliteService implements SatelliteAdapter, OnDestroy {
             const existing = this.streams.get(session.sessionId);
             if (existing?.source === source) continue;
             existing?.subscription.unsubscribe(); existing?.destroyed?.unsubscribe();
+            this.output.close(session.sessionId);
             if (typeof source?.subscribe !== 'function') {
                 this.streams.delete(session.sessionId);
-                this.output.close(session.sessionId);
                 continue;
             }
             const subscription = source.subscribe((data: string | Buffer) => this.output.append(session.sessionId, data));

@@ -303,6 +303,7 @@ For split panes:
             schema: z.object({}),
             handler: async () => {
                 const sessions = this.findTerminalSessions();
+                const tracking = this.config.store.mcp?.sessionTracking;
                 const result = sessions.map(s => {
                     const tabAny = s.tab as any;
                     const keyboardInteractivePrompt = this.getKeyboardInteractivePrompt(s);
@@ -316,13 +317,13 @@ For split panes:
                         sshConnected: tabAny.sshSession?.open === true,
                         keyboardInteractivePending: Boolean(keyboardInteractivePrompt),
                         keyboardInteractivePrompt: this.describeKeyboardInteractivePrompt(keyboardInteractivePrompt),
-                        profile: tabAny.profile ? {
+                        profile: tracking?.includeProfileInfo !== false && tabAny.profile ? {
                             id: tabAny.profile.id,
                             name: tabAny.profile.name,
                             type: tabAny.profile.type
                         } : undefined,
-                        pid: tabAny.session?.pty?.pid,
-                        cwd: tabAny.session?.cwd,
+                        pid: tracking?.includePid !== false ? tabAny.session?.pty?.pid : undefined,
+                        cwd: tracking?.includeCwd !== false ? tabAny.session?.cwd : undefined,
                         // Split pane information
                         isSplit: s.isSplit,
                         splitTabIndex: s.splitTabIndex,

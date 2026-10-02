@@ -23,6 +23,12 @@ The Hub exposes all **36 upstream tools**, plus `list_windows` and bounded
 requests fail instead of selecting another window. The Hub remains available
 when Tabby is closed, with no connected terminal sessions.
 
+Monitored CMD commands use batch syntax (for example, `for %%i`) in a child CMD
+process, launched by Windows PowerShell, so malformed syntax cannot consume
+completion markers. Changes to that child's
+directory or environment do not persist in the pane; use `send_input` for those
+changes or interactive commands.
+
 Local clients need no authentication. `tabby-hub expose tailnet` enables trusted
 direct Tailnet access. Public HTTPS and Funnel access uses OAuth authorization
 code flow with PKCE, passkey owner approval, scopes and revocable grants;

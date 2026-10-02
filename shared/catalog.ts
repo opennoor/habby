@@ -116,6 +116,8 @@ Session targeting (priority order): sessionId > tabIndex > title > profileName
 - profileName: Match by profile name (partial, case-insensitive)
 
 For interactive/paging commands (less, vim, top), set waitForOutput=false.
+Monitored CMD uses batch syntax (e.g. for %%i) in a child CMD launched by Windows PowerShell.
+Use send_input for persistent CMD directory/environment changes or interactive input.
 For long-running commands, increase timeout or use waitForOutput=false and poll with get_terminal_buffer.`, schema: targets(z.object({
                 command: z.string().describe('Command to execute'),
                 sessionId: z.string().optional().describe('Stable session ID (recommended, from get_session_list)'),
@@ -123,7 +125,7 @@ For long-running commands, increase timeout or use waitForOutput=false and poll 
                 title: z.string().optional().describe('Match session by title (partial, case-insensitive)'),
                 profileName: z.string().optional().describe('Match session by profile name (partial, case-insensitive)'),
                 waitForOutput: z.boolean().optional().describe('Wait for command completion (default: true). Set false for interactive commands.'),
-                timeout: z.number().optional().describe('Timeout in ms (default: 30000, max: 300000)')
+                timeout: z.number().int().min(1).max(300000).optional().describe('Timeout in ms (default: 30000, max: 300000)')
             })), scopes: ['terminal:write'], aggregate: false },
   { name: 'send_input', description: `Send raw input to a terminal. Use this for interactive commands like vim, less, top, etc.
 Session targeting: sessionId (recommended) > tabIndex > title > profileName

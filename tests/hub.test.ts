@@ -53,6 +53,8 @@ test('real MCP over HTTP routes two authenticated WSS satellites independently',
   const trust: SatelliteTrust = JSON.parse(await readFile(join(config.stateDir, 'satellite.json'), 'utf8'));
   const windows = [randomUUID(), randomUUID()];
   const peers = await Promise.all(windows.map(id => satellite(trust, id)));
+  const dispatched: unknown[] = [];
+  peers[1].on('message', buffer => { const message = JSON.parse(String(buffer)); if (message.type === 'request') dispatched.push(message); });
   t.after(() => { for (const peer of peers) peer.terminate(); });
   const client = new Client({ name: 'Hub integration test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.trustedPort}/mcp`)));
@@ -66,6 +68,12 @@ test('real MCP over HTTP routes two authenticated WSS satellites independently',
   const result = await client.callTool({ name: 'exec_command', arguments: { command: 'whoami', sessionId: globalId(windows[1], 'pane') } });
   assert.notEqual(result.isError, true);
   assert.match(JSON.stringify(result), new RegExp(windows[1]));
+  const beforeInvalid = dispatched.length;
+  for (const timeout of [-1, 0, 0.5, 300001]) {
+    const invalid = await client.callTool({ name: 'exec_command', arguments: { command: 'whoami', timeout, sessionId: globalId(windows[1], 'pane') } });
+    assert.equal(invalid.isError, true);
+  }
+  assert.equal(dispatched.length, beforeInvalid);
   peers[0].close(); await once(peers[0], 'close');
   const resultAfterClose = await client.callTool({ name: 'send_input', arguments: { input: 'x', sessionId: globalId(windows[1], 'pane') } });
   assert.notEqual(resultAfterClose.isError, true);
