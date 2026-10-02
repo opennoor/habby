@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 $user = 'tabby-hub-ci'
 $otherUser = 'tabby-hub-reader-ci'
 $secure = ConvertTo-SecureString ([guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force

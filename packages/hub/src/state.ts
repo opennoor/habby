@@ -20,6 +20,7 @@ export async function privateDirectory(path: string): Promise<void> {
   if (process.getuid && stat.uid !== process.getuid()) throw new Error('State directory must belong to the current user.');
   if (process.platform === 'win32') {
     const script = `$ErrorActionPreference='Stop'
+      $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
       $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User
       $acl=New-Object System.Security.AccessControl.DirectorySecurity
       $acl.SetOwner($sid)

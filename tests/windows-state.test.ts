@@ -13,7 +13,7 @@ test('native Windows state replaces unsafe explicit ACLs before writing secrets'
   let preserveForProbe = false;
   t.after(() => preserveForProbe ? undefined : rm(stateDir, { recursive: true, force: true }));
   const execute = promisify(execFile);
-  const powershell = async (script: string) => JSON.parse((await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+  const powershell = async (script: string) => JSON.parse((await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from("$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules'); " + script, 'utf16le').toString('base64')],
     { env: { ...process.env, TABBY_HUB_PRIVATE_STATE_DIR: stateDir } })).stdout);
   const identity = await powershell(`$id=[System.Security.Principal.WindowsIdentity]::GetCurrent(); $principal=New-Object System.Security.Principal.WindowsPrincipal($id);
     @{sid=$id.User.Value; admin=$principal.IsInRole([System.Security.Principal.WindowsBuiltinRole]::Administrator)} | ConvertTo-Json -Compress`);
