@@ -1,0 +1,68 @@
+{
+  "name": "tabby-hub-mcp",
+  "version": "0.1.0",
+  "description": "One MCP Hub for every Tabby window",
+  "type": "module",
+  "license": "MIT",
+  "repository": "github:Sojaner/tabby-hub-mcp",
+  "packageManager": "pnpm@11.6.0",
+  "engines": {
+    "node": ">=24.21.0"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.21.0",
+      "onFail": "download"
+    }
+  },
+  "bin": {
+    "tabby-hub": "dist/packages/hub/src/cli.js"
+  },
+  "files": [
+    "dist",
+    "packages/satellite/dist",
+    "packages/satellite/package.json",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && pnpm --dir packages/satellite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --dir packages/satellite typecheck",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "dev": "node --import tsx packages/hub/src/cli.ts",
+    "release": "node --import tsx scripts/release.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.2.0",
+    "@modelcontextprotocol/node": "2.1.0",
+    "@modelcontextprotocol/server": "2.2.0",
+    "@simplewebauthn/server": "14.0.3",
+    "jose": "^6.1.0",
+    "oidc-provider": "9.12.2",
+    "selfsigned": "^5.2.0",
+    "ws": "^8.18.3",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@angular/common": "17.3.12",
+    "@angular/core": "17.3.12",
+    "@angular/forms": "17.3.12",
+    "@types/node": "^24.0.0",
+    "@types/oidc-provider": "^9.0.0",
+    "@types/ws": "^8.18.0",
+    "@xterm/addon-serialize": "^0.12.0",
+    "rxjs": "^7.8.2",
+    "strip-ansi": "^7.1.0",
+    "tabby-core": "1.0.163",
+    "tabby-settings": "1.0.163",
+    "tabby-ssh": "1.0.163",
+    "tabby-terminal": "1.0.163",
+    "ts-loader": "^9.5.0",
+    "tsx": "^4.20.0",
+    "typescript": "5.9.3",
+    "webpack": "^5.99.0",
+    "webpack-cli": "^6.0.0"
+  }
+}
