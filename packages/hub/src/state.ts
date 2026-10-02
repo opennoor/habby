@@ -27,7 +27,8 @@ export async function privateDirectory(path: string): Promise<void> {
       $acl.SetAccessRuleProtection($true,$false)
       $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
       $acl.AddAccessRule($rule)
-      Set-Acl -LiteralPath $env:TABBY_HUB_PRIVATE_STATE_DIR -AclObject $acl
+      # Persist only owner/DACL changes; Set-Acl also requests privileged SACL writes.
+      [IO.Directory]::SetAccessControl($env:TABBY_HUB_PRIVATE_STATE_DIR,$acl)
       foreach($name in @('config.json','satellite.json','secrets.json','auth.sqlite','auth.sqlite-wal','auth.sqlite-shm')) {
         $file=Join-Path $env:TABBY_HUB_PRIVATE_STATE_DIR $name
         if(Test-Path -LiteralPath $file) {
@@ -37,7 +38,7 @@ export async function privateDirectory(path: string): Promise<void> {
           $fileAcl.SetOwner($sid)
           $fileAcl.SetAccessRuleProtection($true,$false)
           $fileAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow')))
-          Set-Acl -LiteralPath $file -AclObject $fileAcl
+          [IO.File]::SetAccessControl($file,$fileAcl)
         }
       }`;
     await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],

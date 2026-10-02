@@ -15,6 +15,7 @@ function Invoke-StandardUser($account, $executable, $arguments, $logPrefix) {
   $stderr = Join-Path $testRoot "$logPrefix-stderr.log"
   $test = Start-Process -FilePath $executable -WorkingDirectory $projectRoot -Credential $credential -LoadUserProfile -PassThru `
     -ArgumentList $arguments -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+  $processHandle = $test.Handle # Preserve ExitCode for redirected Start-Process children.
   if (-not $test.WaitForExit(180000)) {
     Stop-Process -Id $test.Id -Force -ErrorAction SilentlyContinue
     throw 'Native Windows test exceeded three minutes.'
