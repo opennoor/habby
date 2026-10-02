@@ -44,6 +44,24 @@ test('native CMD preserves multiline quotes, metacharacters, percent expansion a
 });
 
 test('native CMD completion survives nonzero exits and incomplete IF before another outer command', { skip: process.platform !== 'win32' }, t => {
+    // Temporary native-only diagnosis: compare /c argument parsing with batch EOF.
+    // Keep the production assertion below intact until a real parser boundary is proven.
+    const cases = [
+        ['multiline', 'echo raw-first\r\necho raw-second'],
+        ['balanced-group', 'if 1==1 (\r\necho grouped-first\r\necho grouped-second\r\n)'],
+        ['incomplete-group', 'if 1==1 ('],
+        ['multiline-incomplete', 'echo before-incomplete\r\nif 1==1 ('],
+        ['exit-zero', 'exit /b 0'], ['exit-seven', 'exit /b 7'],
+        ['literal-percent', 'echo literal %% percent'],
+        ['quoted-metacharacters', 'echo "quoted & (parentheses)" & echo caret^&pipe^|angle^<^>'],
+    ];
+    for (const [name, command] of cases) {
+        const native = spawnSync(process.env.ComSpec!, ['/d', '/q', '/s', '/c', `"${command}"`], {
+            windowsVerbatimArguments: true, encoding: 'utf8', timeout: 10000,
+        });
+        t.diagnostic(JSON.stringify({ rawCmdCase: name, status: native.status, error: native.error?.message,
+            stdout: native.stdout, stderr: native.stderr }));
+    }
     const results = runCommands(t, ['echo before-failure\nexit /b 7', 'if 1==1 (', 'echo outer-still-usable\nexit /b 0']);
     assert.equal(results[0].exitCode, 7); assert.match(results[0].output, /before-failure/);
     assert.notEqual(results[1].exitCode, 0, 'Incomplete syntax must fail, not consume the outer completion marker.');
