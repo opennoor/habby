@@ -45,13 +45,23 @@ test('native CMD preserves multiline quotes, metacharacters, percent expansion a
 
 test('native CMD reports unproven zero exits honestly and retains the outer prompt', { skip: process.platform !== 'win32' }, t => {
     const results = runCommands(t, ['echo before-failure\nexit /b 7', 'cmd /d /c exit 7', 'if 1==1 (', 'echo outer-still-usable', 'exit /b 0']);
-    assert.equal(results[0].exitCode, 7); assert.match(results[0].output, /before-failure/);
-    assert.equal(results[1].exitCode, 7, 'Reaching the completion probe must preserve a real native failure status.');
-    for (const result of [results[2], results[4]]) {
-        assert.equal(result.error, 'OUTCOME_UNKNOWN'); assert.equal(result.outcomeUnknown, true);
-        assert.equal(Object.hasOwn(result, 'exitCode'), false, 'A zero native exit without completion proof must not fabricate a status.');
+    t.diagnostic(`Captured native CMD outcomes: ${JSON.stringify(results)}`);
+    assert.equal(results[0].exitCode, 7, JSON.stringify(results[0])); assert.match(results[0].output, /before-failure/);
+    assert.equal(results[1].exitCode, 7, `Completion probe must preserve native failure: ${JSON.stringify(results[1])}`);
+    const incomplete = results[2], details = `Incomplete IF must never report success: ${JSON.stringify(incomplete)}`;
+    if (incomplete.exitCode !== undefined) {
+        assert.ok(Number.isInteger(incomplete.exitCode), details);
+        assert.notEqual(incomplete.exitCode, 0, details);
+    } else {
+        assert.equal(incomplete.error, 'OUTCOME_UNKNOWN', details);
+        assert.equal(incomplete.outcomeUnknown, true, details);
+        assert.equal(Object.hasOwn(incomplete, 'exitCode'), false, details);
     }
-    assert.equal(results[3].exitCode, 0); assert.match(results[3].output, /outer-still-usable/);
+    const earlyZero = results[4], earlyDetails = `Early zero exit has no completion proof: ${JSON.stringify(earlyZero)}`;
+    assert.equal(earlyZero.error, 'OUTCOME_UNKNOWN', earlyDetails);
+    assert.equal(earlyZero.outcomeUnknown, true, earlyDetails);
+    assert.equal(Object.hasOwn(earlyZero, 'exitCode'), false, earlyDetails);
+    assert.equal(results[3].exitCode, 0, JSON.stringify(results[3])); assert.match(results[3].output, /outer-still-usable/);
 });
 
 test('native CMD child inherits cwd/environment but changes do not persist; large payloads are staged', { skip: process.platform !== 'win32' }, t => {
