@@ -22,6 +22,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - name: Check native state permissions as a Windows standard user
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: powershell
+        run: .\scripts\windows-native-tests.ps1
       - name: Check installer syntax
         if: runner.os != 'Windows'
         run: sh -n scripts/install.sh

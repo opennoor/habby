@@ -210,6 +210,9 @@ test('real OAuth PKCE code flow binds resource and phone approval to original br
     const stolen=f.browser();assert.equal((await stolen.post(interaction+'/finish',{},desktopCSRF)).status,400);
     const window='11111111-1111-4111-8111-111111111111';
     const approved=await phone.post(approval,{action:'approve',scopes:['terminal:read'],windows:[window]},enrollment.csrf);assert.equal(approved.status,200,await approved.text());
+    const db = new DatabaseSync(join(f.config.stateDir, 'auth.sqlite'));
+    assert.equal(db.prepare("SELECT expires FROM oauth WHERE model='Client' AND key=?").get(digest(client.client_id))?.expires, null);
+    db.close();
     assert.equal((await phone.post(approval,{action:'approve',scopes:['terminal:write']},enrollment.csrf)).status,400);
     const status=await (await desktop.request(interaction+'/status')).json();assert.equal(status.decided,true);
     const finish=await desktop.post(interaction+'/finish',{},desktopCSRF);assert.equal(finish.status,200,await finish.clone().text());
@@ -243,6 +246,36 @@ test('real OAuth PKCE code flow binds resource and phone approval to original br
     assert.equal((await desktop.request('/mcp',{headers:{authorization:'Bearer '+rotated.access_token}})).status,401);
     assert.equal((await desktop.request('/oauth/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:refresh})).status,400);
   } finally {await f.close();}
+});
+
+test('anonymous client floods remain bounded and reclaim capacity without removing approved or local clients', async () => {
+  const f = await fixture();
+  const db = new DatabaseSync(join(f.config.stateDir, 'auth.sqlite'));
+  try {
+    const local = await registerPublicClient(f.config, { client_name: 'Local', redirect_uris: ['http://localhost:4567/callback'] });
+    const issued = Math.floor(Date.now() / 1000);
+    const metadata = (id: string, time = issued) => ({ client_id: id, client_id_issued_at: time, client_name: id,
+      redirect_uris: ['http://localhost:4567/callback'], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'] });
+    const insert = db.prepare("INSERT INTO oauth VALUES('Client',?,?,NULL,NULL,NULL,NULL)");
+    insert.run(digest('approved'), JSON.stringify(metadata('approved', issued - 7200)));
+    db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?,0)').run('approved-grant', 'approved', '["terminal:read"]', null, Date.now(), Date.now() + 86400000);
+    for (let index = 0; index < 254; index++) insert.run(digest('flood-' + index), JSON.stringify(metadata('flood-' + index)));
+    const agent = f.browser();
+    for (let index = 0; index < 8; index++) {
+      const response = await agent.request('/oauth/reg', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: 'Legitimate ' + index, redirect_uris: ['http://localhost:4567/callback'] }) });
+      assert.equal(response.status, 201, await response.clone().text());
+      const client = await response.json();
+      assert.equal(db.prepare("SELECT expires FROM oauth WHERE model='Client' AND key=?").get(digest(client.client_id))?.expires, (client.client_id_issued_at + 3600) * 1000);
+      assert.equal(db.prepare("SELECT count(*) AS n FROM oauth WHERE model='Client'").get()?.n, 256);
+      for (const id of [local.client_id, 'approved']) assert.ok(db.prepare("SELECT key FROM oauth WHERE model='Client' AND key=?").get(digest(id)));
+    }
+    db.prepare("UPDATE oauth SET expires=NULL,payload=json_set(payload,'$.client_id_issued_at',CAST(? AS INTEGER)) WHERE model='Client' AND key NOT IN (?,?)").run(issued - 7200, digest(local.client_id), digest('approved'));
+    await f.restart();
+    assert.equal(db.prepare("SELECT count(*) AS n FROM oauth WHERE model='Client'").get()?.n, 2, 'expired legacy anonymous rows must be reclaimed across restart');
+    assert.equal(db.prepare("SELECT expires FROM oauth WHERE model='Client' AND key=?").get(digest('approved'))?.expires, null);
+    assert.equal(db.prepare("SELECT expires FROM oauth WHERE model='Client' AND key=?").get(digest(local.client_id))?.expires, null);
+  } finally { db.close(); await f.close(); }
 });
 
 test('manual tokens and local pre-registration persist while SSRF and invalid redirects fail closed',async()=>{

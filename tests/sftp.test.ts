@@ -34,11 +34,20 @@ function loadSftp(writeSync = fs.writeSync) {
         if (id === './terminal') return { TerminalToolCategory: dummy };
         return require(id);
     };
-    runInNewContext(compiled, { module, exports: module.exports, require: mockRequire, Buffer, setTimeout, clearTimeout });
+    runInNewContext(compiled, { module, exports: module.exports, require: mockRequire, Buffer, TextEncoder, setTimeout, clearTimeout });
     return module.exports;
 }
 const { StreamFileDownload, StreamFileUpload, SFTPToolCategory } = loadSftp();
 const logger = { info() {}, debug() {}, warn() {}, error() {} };
+test('text writes close the remote SFTP handle on success and failure', async () => {
+    for (const fails of [false, true]) {
+        let closes = 0;
+        const tools = category({ open: async () => ({ write: async () => { if (fails) throw new Error('remote write failed'); }, close: async () => { closes++; } }) });
+        const result = JSON.parse((await tools.mcpTools.find((tool: any) => tool.name === 'sftp_write_file').handler({ path: '/file', content: 'text' })).content[0].text);
+        assert.equal(result.success, !fails); assert.equal(closes, 1);
+        if (fails) assert.equal(result.error, 'remote write failed');
+    }
+});
 function category(backend?: any, timeout = 30) {
     const tool = new SFTPToolCategory({}, { store: { mcp: { sftp: { timeout } } } }, logger, {}, {});
     tool.findSSHSession = () => ({ sessionId: 'pane', tab: { title: 'test', sshSession: { open: true } } });

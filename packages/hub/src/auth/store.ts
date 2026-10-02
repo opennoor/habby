@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { chmod, lstat, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Adapter, AdapterPayload } from 'oidc-provider';
+import { privateDirectory } from '../state.js';
 
 export const secret = () => randomBytes(32).toString('base64url');
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -13,6 +14,9 @@ export class AuthStore {
   private nextCleanup = 0;
   cleanup() {
     if (Date.now() < this.nextCleanup) return;
+    this.db.prepare(`UPDATE oauth SET expires=(json_extract(payload, '$.client_id_issued_at')+3600)*1000
+      WHERE model='Client' AND expires IS NULL AND json_type(payload, '$.client_id_issued_at')='integer'
+      AND NOT EXISTS (SELECT 1 FROM grants WHERE client_id=json_extract(payload, '$.client_id') AND revoked=0 AND expires>?)`).run(Date.now());
     this.db.prepare('DELETE FROM oauth WHERE expires IS NOT NULL AND expires<=?').run(Date.now());
     this.db.prepare('DELETE FROM owner_state WHERE expires IS NOT NULL AND expires<=?').run(Date.now());
     this.db.prepare('DELETE FROM manual_tokens WHERE expires<=?').run(Date.now());
@@ -66,8 +70,18 @@ export class AuthStore {
         cleanup();
         const payload = { ...input };
         if (privateModels.has(model)) delete payload.jti;
+        if (model === 'Client' && typeof input.client_id_issued_at === 'number') {
+          const count = () => (db.prepare("SELECT COUNT(*) AS count FROM oauth WHERE model='Client'").get() as { count: number }).count;
+          if (count() >= 256) db.prepare(`DELETE FROM oauth WHERE model='Client' AND key=(
+            SELECT key FROM oauth WHERE model='Client' AND json_type(payload, '$.client_id_issued_at')='integer'
+            AND NOT EXISTS (SELECT 1 FROM grants WHERE client_id=json_extract(payload, '$.client_id') AND revoked=0 AND expires>?)
+            ORDER BY json_extract(payload, '$.client_id_issued_at'), key LIMIT 1)`).run(Date.now());
+          if (count() >= 256) throw new Error('Client registration quota reached by approved or pre-registered clients. Ask the host owner to revoke unused grants.');
+        }
+        const expires = expiresIn ? Date.now() + expiresIn * 1000 :
+          model === 'Client' && typeof input.client_id_issued_at === 'number' ? (input.client_id_issued_at + 3600) * 1000 : null;
         db.prepare('INSERT OR REPLACE INTO oauth VALUES(?,?,?,?,?,?,?)').run(model, digest(id), JSON.stringify(payload),
-          expiresIn ? Date.now() + expiresIn * 1000 : null, input.grantId ?? null, input.uid ?? null, input.userCode ?? null);
+          expires, input.grantId ?? null, input.uid ?? null, input.userCode ?? null);
       },
       async consume(id) {
         const payload = await find(id);
@@ -90,6 +104,7 @@ export class AuthStore {
 }
 
 export async function openStore(stateDir: string) {
+  if (process.platform === 'win32') await privateDirectory(stateDir);
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
   const directory = await lstat(stateDir);
   if (directory.isSymbolicLink() || !directory.isDirectory() || (process.platform !== 'win32' && ((directory.mode & 0o077) || directory.uid !== process.getuid?.()))) {

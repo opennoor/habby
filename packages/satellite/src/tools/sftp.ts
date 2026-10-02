@@ -589,8 +589,8 @@ For text content only. Use sftp_upload for binary files.`,
                     const flags = params.append ? (2 | 8 | 4) : (2 | 8 | 16);
                     const handle = await sftp.open(params.path, flags);
                     const data = new TextEncoder().encode(params.content);
-                    await handle.write(data);
-                    await handle.close();
+                    try { await handle.write(data); }
+                    finally { await handle.close(); }
 
                     this.logger.info(`[sftp_write_file] Success: ${data.length} bytes written to ${params.path}`);
 

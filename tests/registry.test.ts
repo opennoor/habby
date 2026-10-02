@@ -4,6 +4,20 @@ import { randomUUID } from 'node:crypto';
 import { WindowRegistry } from '../packages/hub/src/registry.js';
 import { globalId, LOCAL_PRINCIPAL } from '../shared/protocol.js';
 
+test('abort during listener attachment prevents request dispatch and clears pending state', async () => {
+  const registry = new WindowRegistry(); const windowId = randomUUID(); const messages: any[] = [];
+  registry.register({ type: 'register', protocol: 1, windowId, metadata: {}, capabilities: ['exec_command'],
+    snapshot: { tabs: [], sessions: [], profiles: [], transfers: [] } }, message => messages.push(message));
+  const controller = new AbortController();
+  const attach = controller.signal.addEventListener.bind(controller.signal);
+  controller.signal.addEventListener = (...args) => { controller.abort(); attach(...args); };
+  try {
+    await assert.rejects(registry.call('exec_command', { windowId, command: 'never' }, LOCAL_PRINCIPAL, controller.signal), { code: 'OUTCOME_UNKNOWN' });
+    assert.equal(messages.filter(message => message.type === 'request').length, 0);
+    assert.equal((registry as any).pending.size, 0);
+  } finally { registry.close(); }
+});
+
 test('two matching windows remain isolated and ambiguous mutation fails', async () => {
   const registry = new WindowRegistry();
   const windows = [randomUUID(), randomUUID()];

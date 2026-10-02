@@ -4,6 +4,8 @@ Inspected on 2026-10-02: [GentlemanHu/Tabby-MCP](https://github.com/GentlemanHu/
 
 ## Inventory boundary and tool counts
 
+This is the pinned upstream inventory. The implemented Hub satellite changes downloads: it writes to a private staging file and preserves an existing destination until exact-size backend completion and atomic replacement. Failed or cancelled downloads discard staging. Its host-file paths must be absolute. The upstream behaviors in the tables below describe the inspected revision, not these Hub changes.
+
 There are **36 implemented tool definitions** in three categories: **15 tab/profile tools, 9 terminal tools, and 12 SFTP tools**. Each category's initialization explicitly registers these tools; the upstream smoke test independently expects `[9, 15, 12]`. [Tab registration](https://github.com/GentlemanHu/Tabby-MCP/blob/86a52fdfadb724959929f052c1fc89a45c9f1b0f/src/tools/tabManagement.ts#L28-L51), [terminal registration](https://github.com/GentlemanHu/Tabby-MCP/blob/86a52fdfadb724959929f052c1fc89a45c9f1b0f/src/tools/terminal.ts#L65-L77), [SFTP registration](https://github.com/GentlemanHu/Tabby-MCP/blob/86a52fdfadb724959929f052c1fc89a45c9f1b0f/src/tools/sftp.ts#L122-L138), [smoke count](https://github.com/GentlemanHu/Tabby-MCP/blob/86a52fdfadb724959929f052c1fc89a45c9f1b0f/scripts/smoke-test.js#L11-L20).
 
 Actual `tools/list` visibility depends on settings and installed providers:

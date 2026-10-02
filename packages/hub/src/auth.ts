@@ -192,6 +192,7 @@ export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
     if (generation() !== ownerGeneration || !store.get<boolean>('owner-enabled')) { await grant.destroy(); throw new Error('Owner authentication changed. Start a new approval.'); }
     store.db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?,0)').run(pending.grantId, pending.clientId, JSON.stringify(selected),
       windows === undefined ? null : JSON.stringify(windows), Date.now(), Date.now() + GRANT_TTL);
+    store.db.prepare("UPDATE oauth SET expires=NULL WHERE model='Client' AND key=?").run(digest(pending.clientId));
     store.set('pending:' + pending.uid, pending, pending.expires);
   }
   function consentContent(pending: Pending, phone: boolean, signedIn: boolean) {
@@ -233,8 +234,6 @@ export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
         if (path === issuerPath + '/auth') limit(req, 'authorization', 60);
         if (path === issuerPath + '/reg' && req.method === 'POST') {
           limit(req, 'registration', 10);
-          const clients = store.db.prepare("SELECT COUNT(*) AS count FROM oauth WHERE model='Client'").get() as { count: number };
-          if (clients.count >= 256) throw new Error('Client registration quota reached. Ask the host owner to remove unused clients.');
           const body = await jsonBody(req);
           const normalized = normalizeClient(body);
           // Delegate protocol registration/registration tokens to oidc-provider after narrow validation.

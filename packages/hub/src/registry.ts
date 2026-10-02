@@ -160,6 +160,7 @@ export class WindowRegistry extends EventEmitter {
       const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
       this.pending.set(id, { windowId: window.id, epoch: window.epoch, mutation, resolve, reject, cleanup });
       signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) { abort(); return; }
       try {
         window.send({ type: 'request', id, windowId: window.id, epoch: window.epoch, operation, params,
           timeoutMs, principal: { id: principal.id, scopes: [...principal.scopes], ...(principal.windows ? { windows: [...principal.windows] } : {}) } });

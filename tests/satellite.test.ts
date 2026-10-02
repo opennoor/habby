@@ -292,6 +292,17 @@ test('production handler catalog includes all 36 upstream tools', () => {
     const host = hostCategories();
     assert.equal(new Set([...host.terminal.mcpTools, ...host.tabs.mcpTools, ...host.sftp.mcpTools].map(tool => tool.name)).size, 36);
 });
+test('close tab reports success only after the host removes the target', async () => {
+    const host = hostCategories();
+    const tab = new host.Terminal(); tab.title = 'retained'; host.app.tabs = [tab];
+    const tool = host.tabs.mcpTools.find((tool: any) => tool.name === 'close_tab');
+    const tabId = host.tabs.getOrCreateTabId(tab);
+    (host.app as any).closeTab = async () => {};
+    const retained = JSON.parse((await tool.handler({ tabId })).content[0].text);
+    assert.equal(retained.success, false); assert.equal(retained.tabId, tabId);
+    (host.app as any).closeTab = async () => { host.app.tabs = []; };
+    assert.equal(JSON.parse((await tool.handler({ tabId })).content[0].text).success, true);
+});
 test('production tab/session resolvers reject stale exact IDs, ambiguous names and inactive defaults', () => {
     const host = hostCategories();
     const a = new host.Terminal(); a.title = 'production'; a.profile.name = 'server';

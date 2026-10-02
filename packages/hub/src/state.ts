@@ -19,8 +19,28 @@ export async function privateDirectory(path: string): Promise<void> {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('State directory must be a real directory.');
   if (process.getuid && stat.uid !== process.getuid()) throw new Error('State directory must belong to the current user.');
   if (process.platform === 'win32') {
-    const account = `${process.env.USERDOMAIN}\\${process.env.USERNAME}`;
-    await promisify(execFile)('icacls.exe', [path, '/inheritance:r', '/grant:r', `${account}:(OI)(CI)F`], { windowsHide: true });
+    const script = `$ErrorActionPreference='Stop'
+      $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User
+      $acl=New-Object System.Security.AccessControl.DirectorySecurity
+      $acl.SetOwner($sid)
+      $acl.SetAccessRuleProtection($true,$false)
+      $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
+      $acl.AddAccessRule($rule)
+      Set-Acl -LiteralPath $env:TABBY_HUB_PRIVATE_STATE_DIR -AclObject $acl
+      foreach($name in @('config.json','satellite.json','secrets.json','auth.sqlite','auth.sqlite-wal','auth.sqlite-shm')) {
+        $file=Join-Path $env:TABBY_HUB_PRIVATE_STATE_DIR $name
+        if(Test-Path -LiteralPath $file) {
+          $item=Get-Item -Force -LiteralPath $file
+          if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'State files must be regular files, not links.' }
+          $fileAcl=New-Object System.Security.AccessControl.FileSecurity
+          $fileAcl.SetOwner($sid)
+          $fileAcl.SetAccessRuleProtection($true,$false)
+          $fileAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow')))
+          Set-Acl -LiteralPath $file -AclObject $fileAcl
+        }
+      }`;
+    await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { windowsHide: true, env: { ...process.env, TABBY_HUB_PRIVATE_STATE_DIR: path } });
   } else await chmod(path, 0o700);
 }
 export async function writePrivateJson(path: string, value: unknown): Promise<void> {

@@ -502,6 +502,9 @@ Tab targeting: tabId (stable, recommended) > tabIndex (legacy) > title (partial 
                 const closedTitle = tab.title;
                 const closedTabId = this.getOrCreateTabId(tab);
                 await this.app.closeTab(tab, !force);
+                if (this.app.tabs.includes(tab)) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ success: false, tabId: closedTabId, error: 'Tab remains open; closing was declined or the tab is pinned.' }) }] };
+                }
 
                 this.logger.info(`Closed tab: ${closedTitle}`);
                 return {
