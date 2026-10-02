@@ -1,0 +1,8 @@
+{
+  "mcp.dialog.command.title": "MCP 命令确认",
+  "mcp.dialog.operation.title": "MCP 操作确认",
+  "mcp.dialog.tab": "终端标签页",
+  "mcp.dialog.approve": "批准",
+  "mcp.dialog.reject": "拒绝",
+  "mcp.dialog.autoReject": "{seconds} 秒后自动拒绝"
+}

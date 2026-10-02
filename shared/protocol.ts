@@ -71,6 +71,7 @@ export interface HubConfig {
   satellitePort: number;
   publicPort: number;
   publicUrl?: string;
+  trustedHosts?: string[];
 }
 export interface SatelliteTrust {
   url: string;

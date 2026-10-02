@@ -32,7 +32,8 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build",
     "dev": "node --import tsx packages/hub/src/cli.ts",
-    "release": "node --import tsx scripts/release.ts"
+    "release": "node --import tsx scripts/release.ts",
+    "smoke:tabby": "pnpm build && node --import tsx scripts/tabby-smoke.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.2.0",
@@ -41,9 +42,11 @@
     "@simplewebauthn/server": "14.0.3",
     "jose": "^6.1.0",
     "oidc-provider": "9.12.2",
+    "qrcode": "1.5.4",
     "selfsigned": "^5.2.0",
     "ws": "^8.18.3",
-    "zod": "3.25.76"
+    "zod": "3.25.76",
+    "zod4": "npm:zod@4.6.5"
   },
   "devDependencies": {
     "@angular/common": "17.3.12",
@@ -51,6 +54,7 @@
     "@angular/forms": "17.3.12",
     "@types/node": "^24.0.0",
     "@types/oidc-provider": "^9.0.0",
+    "@types/qrcode": "1.5.5",
     "@types/ws": "^8.18.0",
     "@xterm/addon-serialize": "^0.12.0",
     "rxjs": "^7.8.2",

@@ -1,6 +1,11 @@
 # Tabby Hub and satellite architecture
 
-Status: proposed design, 2026-10-02. This repository does not yet implement it.
+Status: implementation architecture, 2026-10-02. The Hub and satellite are implemented.
+See [installation](installation.md) for operating instructions and native release acceptance limits.
+
+The shipped baseline exposes tools over Streamable HTTP and the stdio bridge.
+Optional MCP resources/subscriptions, durable operation audit records and directory
+restrictions on file grants remain extensions described below.
 
 The Hub is one independently supervised Node process for the signed-in OS user. It exposes a single logical MCP server named **Tabby Hub**. Every Tabby window loads one satellite, which connects outward to the Hub and controls only that window. Agents discover and address every connected window through the Hub.
 
@@ -143,9 +148,9 @@ Optional MCP resources expose window topology and terminal snapshots under `tabb
 
 Input uses the existing `send_input` tool, routed over the full-duplex satellite socket. Output originates from the target terminal's session output observable, never from spawning a new shell in the Hub. Use one capture subscription per observed pane and fan out to readers. Preserve byte/encoding information when the host API supplies it; do not claim separate stdout/stderr from a combined PTY stream.
 
-Each observed session has a bounded in-memory output ring in its satellite, an output epoch, and monotonically increasing sequence numbers. Proposed starting limits: 1 MiB per captured session, 32 MiB total per satellite, 64 KiB per read, and at most 25 seconds for a long-poll read. Capture starts before monitored execution or when an agent first requests observation; the existing terminal buffer supplies earlier visible scrollback. Do not imply uncaptured history is available. Eviction reports a gap and the oldest available cursor. Never block the user's PTY because an agent consumes output slowly.
+Each observed session has a bounded in-memory output ring in its satellite, an output epoch, and monotonically increasing sequence numbers. Limits: 1 MiB per captured session, 32 MiB total per satellite, 64 KiB per read, and at most 25 seconds for a long-poll read. Capture starts before monitored execution or when an agent first requests observation; the existing terminal buffer supplies earlier visible scrollback. Do not imply uncaptured history is available. Eviction reports a gap and the oldest available cursor. Never block the user's PTY because an agent consumes output slowly.
 
-`read_terminal_output` returns chunks, `nextCursor`, output epoch, gap information, and session state. A client can repeatedly call it while writing input with ordinary tools. Modern clients may subscribe to the output resource and retrieve changes using the SDK's supported subscription/listen stream. The current 2026-07-28 protocol and older 2025-era clients differ in transport lifecycle; use official SDK v2 compatibility, not custom SSE notification semantics. [SDK protocol support](https://ts.sdk.modelcontextprotocol.io/v2/protocol-versions), [current HTTP transport](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
+`read_terminal_output` returns base64 bytes, encoding, byte count, a `cursor` containing the output epoch and absolute offset, and a `gap` flag. A client can repeatedly call it while writing input with ordinary tools. Modern clients may subscribe to the output resource and retrieve changes using the SDK's supported subscription/listen stream. The current 2026-07-28 protocol and older 2025-era clients differ in transport lifecycle; use official SDK v2 compatibility, not custom SSE notification semantics. [SDK protocol support](https://ts.sdk.modelcontextprotocol.io/v2/protocol-versions), [current HTTP transport](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
 
 Keep `get_terminal_buffer` as a readable screen/scrollback snapshot. A terminal screen is not an append-only log, especially with full-screen programs; its line indices must not be used as output-stream cursors.
 
@@ -153,13 +158,13 @@ Waiting `exec_command` retains shell-aware completion/exit-code collection. Use 
 
 Track asynchronous submissions too, but report `submitted`/`unknown` when no reliable completion observation exists. `get_command_status` describes Hub/satellite-observed commands, not a general OS process table. Preserve user confirmations and focus/background settings before writing input; a background window remains fully routable without being brought to the foreground.
 
-Cross-platform parity needs explicit command adapters for POSIX sh/bash/zsh, fish, PowerShell (Windows PowerShell and pwsh), and CMD. Use confirmed profile/session shell information, with an explicit override when detection is uncertain. Never send POSIX wrappers into a PowerShell shell or arbitrary REPL. Where completion cannot be identified safely, use raw input plus output observation and report the limitation. Implemented native-shell support is a release requirement, not a claim about upstream. Upstream wrappers currently handle only POSIX/fish. [Upstream wrappers](https://github.com/GentlemanHu/Tabby-MCP/blob/86a52fdfadb724959929f052c1fc89a45c9f1b0f/src/tools/terminal.ts#L234).
+Cross-platform parity needs explicit command adapters for POSIX sh/bash/zsh, fish, PowerShell (Windows PowerShell and pwsh), and CMD. Use confirmed profile/session shell information, and use raw input when detection is uncertain. Never send POSIX wrappers into a PowerShell shell or arbitrary REPL. Where completion cannot be identified safely, use raw input plus output observation and report the limitation. Implemented native-shell support is a release requirement, not a claim about upstream. Upstream wrappers currently handle only POSIX/fish. [Upstream wrappers](https://github.com/GentlemanHu/Tabby-MCP/blob/86a52fdfadb724959929f052c1fc89a45c9f1b0f/src/tools/terminal.ts#L234).
 
 ## SFTP and credentials
 
 Retain all 12 SFTP operations, SSH readiness checks, keyboard-interactive prompt handling, synchronous/asynchronous transfer modes, progress/status and cancellation. Session and transfer IDs are window-bound. A Hub restart can reconstruct still-live transfer state from satellites; a satellite/window restart cannot guarantee transfer continuity.
 
-`localPath` in upload/download always means a path on the Tabby host. A remote agent's own filesystem is not implicitly mounted there. Keep path validation and overwrite behavior explicit; public grants can restrict permitted host directories for transfer tools. Such restrictions do not sandbox an agent that also has arbitrary shell-write access.
+`localPath` in upload/download always means a path on the Tabby host. A remote agent's own filesystem is not implicitly mounted there. Keep path validation and overwrite behavior explicit; Directory restrictions for transfer grants are a future extension; current grants constrain scopes and windows. Such restrictions do not sandbox an agent that also has arbitrary shell-write access.
 
 Credentials, private keys, and live SSH/SFTP objects stay in Tabby. Keyboard-interactive answers pass only to the owning satellite and must be redacted from Hub logs, command history, and event snapshots. Do not publish raw environment secrets or private-key material in discovery results. Record agent identity, target, operation, time, and outcome; terminal transcript recording is a separate explicit preference.
 
@@ -193,9 +198,9 @@ Unauthenticated loopback HTTP intentionally trusts local processes, including an
 
 ## Installation and packaging
 
-Ship versioned platform archives/installers containing the compiled Hub, a pinned Node 24 LTS runtime, and the satellite plugin. Users need neither a global Node installation nor a compiler/native build toolchain. Also offer an npm install for developers. Node 24 is an active LTS line at this research date. [Node release schedule](https://github.com/nodejs/Release).
+Ship versioned platform archives/installers containing the compiled Hub, a pinned Node 24 LTS runtime, and the satellite plugin. Users need neither a global Node installation nor a compiler/native build toolchain. Developers can build and install from source with pnpm. Node 24 is an active LTS line at this research date. [Node release schedule](https://github.com/nodejs/Release).
 
-The proposed `tabby-hub install` command detects Tabby and the user's selected profile/plugin directory, installs the packaged satellite, creates private shared state, registers/starts the OS supervisor, checks port ownership, and prints the local MCP configuration. Respect portable/custom Tabby directories rather than assuming one path. Use Tabby's supported plugin installation format; ordinary installation must not replace the user's other plugins or configure remote shell credentials. A satellite can also be installed from Tabby's plugin UI and connected to the same Hub. Restart existing Tabby windows once to load a newly installed plugin.
+The `tabby-hub install` command detects Tabby and the user's selected profile/plugin directory, installs the packaged satellite, creates private shared state, registers/starts the OS supervisor, checks port ownership, and prints the local MCP configuration. Respect portable/custom Tabby directories rather than assuming one path. Use Tabby's supported plugin installation format; ordinary installation must not replace the user's other plugins or configure remote shell credentials. A satellite can also be installed from Tabby's plugin UI and connected to the same Hub. Restart existing Tabby windows once to load a newly installed plugin.
 
 | OS | Default supervision | Shell acceptance targets |
 | --- | --- | --- |
@@ -205,7 +210,7 @@ The proposed `tabby-hub install` command detects Tabby and the user's selected p
 
 These are foreground Node processes under OS supervision, not self-daemonizing processes. Default installation requires ordinary user privileges and persists across Tabby window closure. User-session supervision is not a promise to keep operating after OS logout; unattended pre-login operation is a separate opt-in deployment. [systemd services](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml), [Apple LaunchAgents](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html), [Windows task settings](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings).
 
-The same proposed CLI offers `status`, `doctor`, `uninstall`, and a lightweight `bridge` for stdio-only MCP clients. Network access setup is explicit: `expose tailnet` configures only the trusted Serve route; `expose public` configures HTTPS/Funnel and owner enrollment. Preserve existing Tailscale configuration. Signed/checksummed releases and atomic version replacement make upgrades reversible; incompatible satellite protocol majors produce a visible upgrade-needed state.
+The same CLI offers `status`, `doctor`, `uninstall`, and a lightweight `bridge` for stdio-only MCP clients. Network access setup is explicit: `expose tailnet` configures only the trusted Serve route; `expose public` configures HTTPS/Funnel and owner enrollment. Preserve existing Tailscale configuration. Checksummed releases and versioned installation directories make upgrades reversible; incompatible satellite protocol majors produce a visible upgrade-needed state.
 
 Persist configuration and satellite trust material in the per-user state directory with private permissions. One embedded SQLite database stores the authorization provider adapter and small audit metadata; the bundled runtime supplies `node:sqlite`, currently a release-candidate API in Node 24.21.0. Pin the tested runtime and a small documented API subset. Live window ownership and terminal output stay in memory and are reconstructed from satellites. Do not store terminal transcripts or SSH secrets by default. [Pinned Node SQLite API](https://raw.githubusercontent.com/nodejs/node/v24.21.0/doc/api/sqlite.md).
 

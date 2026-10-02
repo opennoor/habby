@@ -1,0 +1,122 @@
+import { randomUUID } from 'node:crypto';
+import { HubError } from '../../../shared/protocol';
+
+export function uniqueMatch<T>(items: T[], predicate: (item: T) => boolean): T | null {
+    const found = items.filter(predicate);
+    if (found.length > 1) throw new HubError('AMBIGUOUS_TARGET', 'More than one target matches; use its stable ID.');
+    return found[0] ?? null;
+}
+export type Shell = 'sh' | 'fish' | 'powershell' | 'cmd';
+export function shellFromHints(hints: string): Shell {
+    if (/\b(pwsh|powershell)(\.exe)?\b/i.test(hints)) return 'powershell';
+    if (/\bcmd(\.exe)?\b/i.test(hints)) return 'cmd';
+    if (/\bfish\b/i.test(hints)) return 'fish';
+    if (/\b(sh|bash|zsh|dash|ash)(\.exe)?\b/i.test(hints)) return 'sh';
+    throw new HubError('UNSUPPORTED_SHELL', 'Monitored execution requires a known shell; use send_input for a REPL.');
+}
+export function commandWrapper(command: string, shell: Shell, nonce = randomUUID().replaceAll('-', '')) {
+    const head = `__TABBY_${nonce}_`;
+    const start = `${head}START__`, end = `${head}END__`;
+    let text: string;
+    if (shell === 'fish') {
+        text = `printf '\\n%s%s\\n' '${head}' 'START__'; begin; ${command}\nend; set -l tabby_hub_${nonce} $status; printf '\\n%s%s:%s\\n' '${head}' 'END__' $tabby_hub_${nonce}`;
+    } else if (shell === 'powershell') {
+        const status = `tabby_hub_${nonce}`;
+        const script = `${command}\n$global:${status}_ok=$?; $global:${status}_exit=$LASTEXITCODE`;
+        const escaped = script.replaceAll("'", "''");
+        // Out-Default flushes PowerShell's delayed object formatting before the completion marker.
+        text = `[Console]::WriteLine(('${head}'+'START__')); $global:LASTEXITCODE=0; try { . ([ScriptBlock]::Create('${escaped}')) | Out-Default } catch { $global:${status}_ok=$false; $global:${status}_exit=1; $_ | Out-Default }; if (-not $global:${status}_ok -and $global:${status}_exit -eq 0) { $global:${status}_exit=1 }; [Console]::WriteLine(); [Console]::WriteLine(('${head}'+'END__:'+ $global:${status}_exit)); Remove-Variable -Scope Global -Name '${status}_ok','${status}_exit' -ErrorAction SilentlyContinue`;
+    } else if (shell === 'cmd') {
+        // Separate input lines: %errorlevel% expands after the command, unlike one compound line.
+        text = `echo ${start}\r\n${command}\r\necho.\r\necho ${end}:%errorlevel%`;
+    } else {
+        const escaped = command.replaceAll("'", "'\\''");
+        text = `printf '\\n%s%s\\n' '${head}' 'START__'; eval '${escaped}'; tabby_hub_${nonce}=$?; printf '\\n%s%s:%s\\n' '${head}' 'END__' "$tabby_hub_${nonce}"`;
+    }
+    return { text, start, end };
+}
+export class CommandCapture {
+    private pending = ''; private started = false; private output = ''; private truncated = false;
+    constructor(private start: string, private end: string, private maxBytes = 1024 * 1024) {}
+    feed(chunk: string): { output: string; exitCode: number; truncated: boolean } | undefined {
+        this.pending += chunk;
+        if (!this.started) {
+            const match = new RegExp(`(?:^|\\r?\\n)${this.start}\\r?\\n`).exec(this.pending);
+            if (!match) { this.pending = this.pending.slice(-this.start.length - 4); return; }
+            this.pending = this.pending.slice(match.index + match[0].length); this.started = true;
+        }
+        const finish = new RegExp(`(?:^|\\r?\\n)${this.end}:(-?\\d+)\\r?\\n`).exec(this.pending);
+        if (finish) {
+            this.append(this.pending.slice(0, finish.index));
+            return { output: this.output, exitCode: Number(finish[1]), truncated: this.truncated };
+        }
+        const keep = this.end.length + 32;
+        if (this.pending.length > keep) { this.append(this.pending.slice(0, -keep)); this.pending = this.pending.slice(-keep); }
+    }
+    private append(data: string) {
+        const value = Buffer.from(this.output + data);
+        if (value.length > this.maxBytes) { this.output = value.subarray(-this.maxBytes).toString(); this.truncated = true; }
+        else this.output += data;
+    }
+    partial() { return this.output + this.pending; }
+}
+export class OutputRings {
+    private rings = new Map<string, { epoch: string; data: Buffer; length: number; offset: number; touched: number }>();
+    private waiters = new Map<() => void, string>();
+    constructor(private sessionLimit = 1024 * 1024, private totalLimit = 32 * 1024 * 1024) {}
+    append(id: string, data: string | Buffer) {
+        let ring = this.rings.get(id);
+        if (!ring) { ring = { epoch: randomUUID(), data: Buffer.alloc(0), length: 0, offset: 0, touched: Date.now() }; this.rings.set(id, ring); }
+        const incoming = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        if (incoming.length) {
+            if (!ring.data.length) ring.data = Buffer.alloc(this.sessionLimit);
+            const end = ring.offset + ring.length + incoming.length;
+            const tail = incoming.subarray(-this.sessionLimit);
+            const start = (end - tail.length) % this.sessionLimit;
+            const first = Math.min(tail.length, this.sessionLimit - start);
+            tail.copy(ring.data, start, 0, first); tail.copy(ring.data, 0, first);
+            ring.length = Math.min(this.sessionLimit, ring.length + incoming.length);
+            ring.offset = end - ring.length;
+        }
+        ring.touched = Date.now();
+        while ([...this.rings.values()].reduce((n, r) => n + r.data.length, 0) > this.totalLimit) {
+            const oldest = [...this.rings.entries()].sort((a,b) => a[1].touched - b[1].touched)[0];
+            this.rings.delete(oldest[0]);
+        }
+        for (const [wake, target] of [...this.waiters]) if (target === id) wake();
+    }
+    async read(id: string, cursor?: string, maxBytes = 65536, waitMs = 0, signal?: AbortSignal) {
+        if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 65536 || waitMs < 0 || waitMs > 25000) throw new HubError('INVALID_PARAMS', 'Invalid output limits.');
+        if (!this.rings.has(id)) this.append(id, '');
+        const read = () => {
+            const ring = this.rings.get(id)!;
+            let offset = ring.offset, gap = false;
+            if (cursor) {
+                const [epoch, position] = cursor.split(':');
+                const requested = Number(position);
+                if (!Number.isSafeInteger(requested) || requested < 0 || !epoch || cursor.split(':').length !== 2) throw new HubError('INVALID_CURSOR', 'Malformed cursor.');
+                if (epoch !== ring.epoch || requested < ring.offset) gap = true;
+                else if (requested > ring.offset + ring.length) throw new HubError('INVALID_CURSOR', 'Cursor is ahead of output.');
+                else offset = requested;
+            }
+            const bytes = Buffer.alloc(Math.min(maxBytes, ring.offset + ring.length - offset));
+            const start = offset % this.sessionLimit;
+            const first = Math.min(bytes.length, this.sessionLimit - start);
+            ring.data.copy(bytes, 0, start, start + first); ring.data.copy(bytes, first, 0, bytes.length - first);
+            return { data: bytes.toString('base64'), encoding: 'base64', cursor: `${ring.epoch}:${offset + bytes.length}`, gap, bytes: bytes.length };
+        };
+        let result = read();
+        if (!result.bytes && waitMs && !signal?.aborted) {
+            await new Promise<void>((resolve) => {
+                const wake = () => { clearTimeout(timer); this.waiters.delete(wake); signal?.removeEventListener('abort', wake); resolve(); };
+                const timer = setTimeout(wake, waitMs); this.waiters.set(wake, id); signal?.addEventListener('abort', wake, { once: true });
+            });
+            if (!this.rings.has(id)) throw new HubError('SESSION_CLOSED', 'Terminal session closed.');
+            result = read();
+        }
+        if (signal?.aborted) throw new HubError('CANCELLED', 'Output read cancelled.');
+        return result;
+    }
+    close(id: string) { this.rings.delete(id); for (const wake of [...this.waiters.keys()]) wake(); }
+    dispose() { this.rings.clear(); for (const wake of [...this.waiters.keys()]) wake(); }
+}

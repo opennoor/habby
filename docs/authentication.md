@@ -1,6 +1,7 @@
 # Hub authentication and network boundaries
 
-Research date: **2026-10-02**. This is a proposed design, not implemented behavior.
+Research date: **2026-10-02**. The Hub implements these authentication boundaries;
+see [installation](installation.md) for configuration and verification limits.
 Primary-source facts are cited inline. Choices marked **Recommendation** are design inferences.
 
 ## Recommendation

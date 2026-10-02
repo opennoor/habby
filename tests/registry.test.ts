@@ -1,0 +1,81 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { WindowRegistry } from '../packages/hub/src/registry.js';
+import { globalId, LOCAL_PRINCIPAL } from '../shared/protocol.js';
+
+test('two matching windows remain isolated and ambiguous mutation fails', async () => {
+  const registry = new WindowRegistry();
+  const windows = [randomUUID(), randomUUID()];
+  const requests: any[] = [];
+  for (const windowId of windows) registry.register({ type: 'register', protocol: 1, windowId,
+    metadata: { label: 'same' }, capabilities: ['list_tabs', 'exec_command'],
+    snapshot: { tabs: [{ id: 'tab', title: 'same' }], sessions: [{ id: 'pane', tabId: 'tab' }], profiles: [], transfers: [] },
+  }, message => {
+    if (message.type === 'request') {
+      requests.push(message);
+      registry.receive(windowId, message.epoch, { type: 'response', id: message.id, windowId,
+        epoch: message.epoch, result: { content: [{ type: 'text', text: JSON.stringify({ window: windowId, sessionId: 'pane' }) }] } });
+    }
+  });
+  await assert.rejects(registry.call('exec_command', { command: 'whoami' }, LOCAL_PRINCIPAL), { code: 'AMBIGUOUS_TARGET' });
+  const result = await registry.call('exec_command', { command: 'whoami', sessionId: globalId(windows[1], 'pane') }, LOCAL_PRINCIPAL);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].windowId, windows[1]);
+  assert.equal(requests[0].params.sessionId, 'pane');
+  assert.match(JSON.stringify(result), new RegExp(windows[1]));
+  await assert.rejects(registry.call('exec_command', { command: 'x', windowId: windows[0], sessionId: globalId(windows[1], 'pane') }, LOCAL_PRINCIPAL), { code: 'INVALID_TARGET' });
+  registry.close();
+});
+
+test('aggregate discovery preserves healthy windows when another lacks the capability', async () => {
+  const registry = new WindowRegistry();
+  const windows = [randomUUID(), randomUUID()];
+  for (const [index, windowId] of windows.entries()) registry.register({
+    type: 'register', protocol: 1, windowId, metadata: {}, capabilities: index ? ['sftp_list_transfers'] : [],
+    snapshot: { tabs: [], sessions: [], profiles: [], transfers: [] },
+  }, message => {
+    if (message.type === 'request') registry.receive(windowId, message.epoch, {
+      type: 'response', windowId, epoch: message.epoch, id: message.id,
+      result: { content: [{ type: 'text', text: '[]' }] },
+    });
+  });
+  try {
+    const result = await registry.call('sftp_list_transfers', {}, LOCAL_PRINCIPAL) as { content: { text: string }[] };
+    const response = JSON.parse(result.content[0].text).windows;
+    assert.equal(response[0].error.code, 'CAPABILITY_UNAVAILABLE');
+    assert.equal(response[1].windowId, windows[1]); assert.deepEqual(response[1].result, []);
+  } finally { registry.close(); }
+});
+
+test('window discovery withholds transfer details without file-read permission', () => {
+  const registry = new WindowRegistry(); const windowId = randomUUID();
+  registry.register({ type: 'register', protocol: 1, windowId, metadata: {}, capabilities: [],
+    snapshot: { tabs: [], sessions: [], profiles: [], transfers: [{ id: 'transfer', path: '/private/file' }] },
+  }, () => {});
+  try {
+    assert.deepEqual((registry.list({ ...LOCAL_PRINCIPAL, scopes: ['terminal:read'] })[0] as any).transfers, []);
+    assert.equal((registry.list(LOCAL_PRINCIPAL)[0] as any).transfers[0].path, '/private/file');
+  } finally { registry.close(); }
+});
+
+test('disconnected mutations have unknown outcome and never auto-replay', async () => {
+  const registry = new WindowRegistry();
+  const windowId = randomUUID();
+  let requests = 0;
+  const registration = { type: 'register' as const, protocol: 1 as const, windowId, metadata: {},
+    capabilities: ['send_input'], snapshot: { tabs: [], sessions: [], profiles: [], transfers: [] } };
+  const connection = registry.register(registration, message => { if (message.type === 'request') requests++; });
+  const pending = registry.call('send_input', { windowId, input: 'x' }, LOCAL_PRINCIPAL);
+  registry.disconnect(windowId, connection.epoch);
+  await assert.rejects(pending, { code: 'OUTCOME_UNKNOWN' });
+  assert.throws(() => registry.register(registration, () => {}), { code: 'INVALID_RESUME' });
+  const resumed = registry.register({ ...registration, resumeToken: connection.resumeToken }, () => {});
+  registry.disconnect(windowId, resumed.epoch);
+  // A lost acknowledgement must not strand the incarnation with an unknown rotated secret.
+  const resumedAgain = registry.register({ ...registration, resumeToken: connection.resumeToken }, () => {});
+  assert.equal(resumedAgain.resumeToken, connection.resumeToken);
+  assert.notEqual(resumedAgain.epoch, resumed.epoch);
+  assert.equal(requests, 1);
+  registry.close();
+});

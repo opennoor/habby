@@ -1,0 +1,298 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { CommandCapture, commandWrapper, OutputRings, shellFromHints, uniqueMatch } from '../packages/satellite/src/runtime.ts';
+
+test('ambiguous names never select the first session', () => {
+    assert.throws(() => uniqueMatch(['prod', 'prod replica'], s => s.includes('prod')), /More than one/);
+    assert.equal(uniqueMatch(['prod'], s => s === 'missing'), null);
+});
+test('wrappers use native shell syntax and shell hints reject REPLs', () => {
+    for (const shell of ['sh', 'fish', 'powershell', 'cmd'] as const) {
+        const wrapper = commandWrapper('echo hello', shell);
+        assert.match(wrapper.start, /^__TABBY_[a-f0-9]{32}_START__$/);
+        assert.notEqual(wrapper.start, commandWrapper('echo hello', shell).start);
+    }
+    assert.equal(shellFromHints('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'), 'powershell');
+    assert.equal(shellFromHints('cmd.exe'), 'cmd');
+    assert.throws(() => shellFromHints('python REPL'), /known shell/);
+    assert.match(commandWrapper('false', 'fish').text, /\$status/);
+    assert.match(commandWrapper('Write-Error failure', 'powershell').text, /LASTEXITCODE/);
+    assert.match(commandWrapper('exit \/b 4', 'cmd').text, /\r\necho\.\r\necho .*%errorlevel%/);
+});
+test('command markers survive arbitrary output chunk boundaries and ignore command echo', () => {
+    const wrapper = commandWrapper('printf hello', 'sh');
+    const capture = new CommandCapture(wrapper.start, wrapper.end);
+    const stream = `${wrapper.text}\r\n${wrapper.start}\r\nhello\r\n${wrapper.end}:7\r\nprompt`;
+    let result;
+    for (const char of stream) { result = capture.feed(char); if (result) break; }
+    assert.deepEqual(result, { output: 'hello', exitCode: 7, truncated: false });
+});
+test('output cursors preserve arbitrary bytes, report eviction and reject ahead cursors', async () => {
+    const ring = new OutputRings(8, 16);
+    ring.append('one', Buffer.from([0xff, 0, 0xfe]));
+    const first = await ring.read('one');
+    assert.deepEqual(Buffer.from(first.data, 'base64'), Buffer.from([0xff, 0, 0xfe]));
+    ring.append('one', '123456789');
+    const second = await ring.read('one', first.cursor, 4);
+    assert.equal(second.gap, true);
+    assert.equal(Buffer.from(second.data, 'base64').toString(), '2345');
+    const rest = await ring.read('one', second.cursor);
+    assert.equal(Buffer.from(rest.data, 'base64').toString(), '6789');
+    ring.append('one', 'AB');
+    assert.equal(Buffer.from((await ring.read('one', rest.cursor)).data, 'base64').toString(), 'AB');
+    await assert.rejects(ring.read('one', first.cursor.split(':')[0] + ':999'), /ahead/);
+    const bounded = new OutputRings(1024 * 1024);
+    bounded.append('huge', Buffer.alloc(16 * 1024 * 1024, 65));
+    assert.equal((bounded as any).rings.get('huge').data.buffer.byteLength, 1024 * 1024);
+    const backing = (bounded as any).rings.get('huge').data;
+    bounded.append('huge', 'B');
+    assert.equal((bounded as any).rings.get('huge').data, backing);
+});
+test('long polls wake on output and cancel when disconnected', async () => {
+    const ring = new OutputRings();
+    const initial = await ring.read('one');
+    const pending = ring.read('one', initial.cursor, 65536, 25000);
+    ring.append('one', 'new output');
+    assert.equal((await pending).bytes, 10);
+    const controller = new AbortController();
+    const cancelled = ring.read('two', undefined, 65536, 25000, controller.signal);
+    controller.abort();
+    await assert.rejects(cancelled, /cancelled/);
+    ring.dispose();
+});
+
+import { createServer } from 'node:https';
+import { once } from 'node:events';
+import { X509Certificate, createHash } from 'node:crypto';
+import { WebSocketServer } from 'ws';
+import selfsigned from 'selfsigned';
+import { SatelliteClient, validateTrust, verifyPin } from '../packages/satellite/src/client.ts';
+
+test('satellite trust rejects public or cleartext Hub URLs', () => {
+    for (const url of ['ws://127.0.0.1:3002/satellite', 'wss://example.com/satellite', 'wss://127.0.0.1:3002/mcp']) {
+        assert.throws(() => validateTrust({ url, certificate: '-----BEGIN CERTIFICATE-----', credential: 'x'.repeat(64), spkiPin: 'pin' }), /loopback/);
+    }
+});
+async function tlsFixture() {
+    const certificate = await selfsigned.generate([{ name: 'commonName', value: 'localhost' }], {
+        keySize: 2048, algorithm: 'sha256', extensions: [{ name: 'subjectAltName', altNames: [{ type: 7, ip: '127.0.0.1' }, { type: 2, value: 'localhost' }] }],
+    });
+    const cert = new X509Certificate(certificate.cert);
+    const pin = 'sha256/' + createHash('sha256').update(cert.publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+    const server = createServer({ cert: certificate.cert, key: certificate.private });
+    const sockets = new WebSocketServer({ server });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const port = (server.address() as any).port;
+    return { certificate, pin, server, sockets, url: `wss://127.0.0.1:${port}/satellite` };
+}
+function timeout<T>(promise: Promise<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Test network operation timed out.')), 5000);
+        promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
+    });
+}
+test('pinned WSS satellite enforces scopes, caches mutations once, and rejects stale epochs', async () => {
+    const f = await tlsFixture();
+    let calls = 0;
+    const client = new SatelliteClient(() => ({ url: f.url.replace('127.0.0.1', 'localhost'), certificate: f.certificate.cert, spkiPin: f.pin, credential: 'x'.repeat(64) }), {
+        capabilities: () => ['exec_command', 'get_terminal_buffer'], snapshot: async () => ({ tabs: [], sessions: [], profiles: [], transfers: [] }),
+        run: async () => { calls++; return { accepted: true }; },
+    });
+    try {
+        const connected = once(f.sockets, 'connection'); client.start();
+        const [peer, request] = await timeout(connected);
+        assert.equal(request.headers.authorization, 'Bearer ' + 'x'.repeat(64));
+        const [registration] = await timeout(once(peer, 'message'));
+        const registered = JSON.parse(registration.toString());
+        assert.equal(registered.protocol, 1); assert.equal(registered.windowId, client.windowId);
+        peer.send(JSON.stringify({ type: 'registered', windowId: client.windowId, epoch: 'test-epoch', resumeToken: 'resume' }));
+        const send = async (id: string, scopes: string[], epoch = 'test-epoch') => {
+            const received = response(id);
+            peer.send(JSON.stringify({ type: 'request', id, windowId: client.windowId, epoch, operation: 'exec_command', params: { command: 'true' }, timeoutMs: 1000, principal: { id: 'agent', scopes } }));
+            return await received;
+        };
+        // Discard snapshot events; collect responses by request ID.
+        const response = (id: string) => timeout(new Promise<any>(resolve => {
+            const handler = (data: any) => { const message = JSON.parse(data.toString()); if (message.type === 'response' && message.id === id) { peer.off('message', handler); resolve(message); } };
+            peer.on('message', handler);
+        }));
+        const denied = await send('denied', ['terminal:read']);
+        assert.equal(denied.error.code, 'FORBIDDEN'); assert.equal(calls, 0);
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const result = response('mutation');
+            peer.send(JSON.stringify({ type: 'request', id: 'mutation', windowId: client.windowId, epoch: 'test-epoch', operation: 'exec_command', params: { command: 'true' }, timeoutMs: 1000, principal: { id: 'agent', scopes: ['terminal:write'] } }));
+            assert.deepEqual((await result).result, { accepted: true });
+        }
+        assert.equal(calls, 1);
+        const closed = once(peer, 'close');
+        peer.send(JSON.stringify({ type: 'resnapshot', windowId: client.windowId, epoch: 'stale-epoch' }));
+        assert.equal((await timeout(closed))[0], 1008);
+    } finally {
+        client.stop(); for (const socket of f.sockets.clients) socket.terminate();
+        await new Promise<void>(resolve => f.sockets.close(() => resolve()));
+        await new Promise<void>(resolve => f.server.close(() => resolve()));
+    }
+});
+test('TLS SPKI mismatch blocks authentication credential before websocket upgrade', async () => {
+    const f = await tlsFixture(); let upgrades = 0;
+    f.sockets.on('connection', () => upgrades++);
+    const client = new SatelliteClient(() => ({ url: f.url, certificate: f.certificate.cert, spkiPin: 'sha256/' + 'x'.repeat(44), credential: 'secret'.repeat(12) }), {
+        capabilities: () => [], snapshot: async () => ({ tabs: [], sessions: [], profiles: [], transfers: [] }), run: async () => undefined,
+    });
+    try {
+        assert.throws(() => verifyPin(new X509Certificate(f.certificate.cert).raw, 'wrong'), /identity changed/);
+        client.start();
+        await timeout(new Promise<void>(resolve => { const poll = setInterval(() => { if (client.status === 'disconnected') { clearInterval(poll); resolve(); } }, 10); }));
+        assert.equal(upgrades, 0);
+    } finally {
+        client.stop(); for (const socket of f.sockets.clients) socket.terminate();
+        await new Promise<void>(resolve => f.sockets.close(() => resolve()));
+        await new Promise<void>(resolve => f.server.close(() => resolve()));
+    }
+});
+
+import { execFileSync } from 'node:child_process';
+test('POSIX wrapper runs real shell command and captures native exit status', { skip: process.platform === 'win32' }, () => {
+    const wrapper = commandWrapper("printf '%s\\n' \"a quote: ' and UTF-8: café\"; false", 'sh');
+    const stream = execFileSync('/bin/bash', ['-c', wrapper.text], { encoding: 'utf8' });
+    const result = new CommandCapture(wrapper.start, wrapper.end).feed(stream);
+    assert.equal(result?.exitCode, 1);
+    assert.equal(result?.output, "a quote: ' and UTF-8: café\n");
+});
+test('PowerShell wrapper executes in native pwsh when installed', t => {
+    try { execFileSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'], { stdio: 'pipe' }); }
+    catch { t.skip('pwsh runtime unavailable on this host'); return; }
+    const wrapper = commandWrapper(`Write-Output 'it''s café'; & '${process.execPath.replaceAll("'", "''")}' -e 'process.exit(7)'`, 'powershell');
+    const stream = execFileSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', wrapper.text], { encoding: 'utf8' });
+    const result = new CommandCapture(wrapper.start, wrapper.end).feed(stream);
+    assert.equal(result?.exitCode, 7);
+    assert.equal(result?.output.replaceAll('\r\n', '\n'), "it's café\n");
+});
+
+test('PowerShell object formatting is flushed before completion and shell errors fail', t => {
+    try { execFileSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'], { stdio: 'pipe' }); }
+    catch { t.skip('pwsh runtime unavailable'); return; }
+    for (const [command, status] of [["[PSCustomObject]@{Name='hello'; Count=1}", 0], ["Write-Error bad", 1], ["throw 'failure'", 1]] as const) {
+        const wrapper = commandWrapper(command, 'powershell');
+        const stream = execFileSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', wrapper.text], { encoding: 'utf8', stdio: ['pipe','pipe','pipe'] });
+        const result = new CommandCapture(wrapper.start, wrapper.end).feed(stream);
+        assert.equal(result?.exitCode, status);
+        if (!status) assert.match(result!.output, /hello/);
+    }
+});
+
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import vm from 'node:vm';
+import ts from 'typescript';
+import * as runtime from '../packages/satellite/src/runtime.ts';
+
+// Host boundaries are supplied here because Angular/Tabby's Electron modules cannot boot in Node tests.
+// The target resolvers and all handler registration below execute the production source unchanged.
+function hostCategories() {
+    class Terminal { title = ''; hasFocus = false; profile = { name: '' }; frontend = {}; }
+    class SSH extends Terminal {}
+    class Split { hasFocus = false; title = ''; panes: Terminal[] = []; focused?: Terminal; getAllTabs() { return this.panes; } getFocusedTab() { return this.focused; } }
+    class Base { mcpTools: any[] = []; constructor(public logger: unknown) {} registerTool(tool: any) { this.mcpTools.push(tool); } }
+    const require = createRequire(import.meta.url);
+    const load = (name: string, extra: Record<string, unknown> = {}) => {
+        const source = readFileSync(new URL(`../packages/satellite/src/tools/${name}.ts`, import.meta.url), 'utf8');
+        const output = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, experimentalDecorators: true, esModuleInterop: true } }).outputText;
+        const module = { exports: {} as any };
+        const injected = {
+            '@angular/core': { Injectable: () => (value: unknown) => value, Inject: () => () => {}, forwardRef: (value: unknown) => value },
+            'tabby-core': { BaseTabComponent: Terminal, SplitTabComponent: Split },
+            'tabby-terminal': { BaseTerminalTabComponent: Terminal }, 'tabby-ssh': { SSHTabComponent: SSH },
+            './base-tool-category': { BaseToolCategory: Base }, '../runtime': runtime,
+            '../services/mcpLogger.service': {}, '../services/dialog.service': {},
+            '../request-context': { checkRequest() {}, requestContext: { getStore() { return undefined; } } },
+            '../execute': { execute() { throw new Error('Not part of target resolver test'); } },
+            'strip-ansi': { __esModule: true, default: (text: string) => text }, ...extra,
+        };
+        vm.runInNewContext(output, { module, exports: module.exports, require: (key: string) => key in injected ? (injected as any)[key] : require(key), console, Buffer, setTimeout, clearTimeout }, { filename: name + '.ts' });
+        return module.exports;
+    };
+    const { TerminalToolCategory } = load('terminal');
+    const { TabManagementToolCategory } = load('tabManagement', { './terminal': { TerminalToolCategory } });
+    const { SFTPToolCategory } = load('sftp', { './terminal': { TerminalToolCategory } });
+    const logger = { debug() {}, info() {}, warn() {}, error() {} };
+    const app = { tabs: [] as any[] }, config = { store: {} }, profiles = { getProfiles: async () => [] };
+    const terminal = new TerminalToolCategory(app, logger, config, {});
+    const tabs = new TabManagementToolCategory(app, logger, config, profiles, terminal);
+    const sftp = new SFTPToolCategory(app, config, logger, terminal, {});
+    return { Terminal, SSH, Split, app, terminal, tabs, sftp };
+}
+test('production handler catalog includes all 36 upstream tools', () => {
+    const host = hostCategories();
+    assert.equal(new Set([...host.terminal.mcpTools, ...host.tabs.mcpTools, ...host.sftp.mcpTools].map(tool => tool.name)).size, 36);
+});
+test('production tab/session resolvers reject stale exact IDs, ambiguous names and inactive defaults', () => {
+    const host = hostCategories();
+    const a = new host.Terminal(); a.title = 'production'; a.profile.name = 'server';
+    const b = new host.Terminal(); b.title = 'production replica'; b.profile.name = 'server replica';
+    host.app.tabs = [a, b];
+    assert.equal(host.terminal.findSessionByLocator({}), null);
+    assert.equal(host.tabs.findTabByLocator({}), null);
+    b.hasFocus = true;
+    assert.equal(host.terminal.findSessionByLocator({}).tab, b);
+    assert.equal(host.tabs.findTabByLocator({}), b);
+    const tabId = host.tabs.getOrCreateTabId(a);
+    const sessionId = host.terminal.getOrCreateSessionId(a);
+    host.app.tabs = [b];
+    assert.equal(host.tabs.findTabByLocator({ tabId, tabIndex: 0, title: 'replica' }), null);
+    assert.equal(host.terminal.findSessionByLocator({ sessionId, tabIndex: 0, title: 'replica' }), null);
+    host.app.tabs = [a, b];
+    assert.throws(() => host.tabs.findTabByLocator({ title: 'production' }), /More than one/);
+    assert.throws(() => host.terminal.findSessionByLocator({ profileName: 'server' }), /More than one/);
+});
+test('production SSH resolver uses exact pane IDs and active window pane defaults', () => {
+    const host = hostCategories();
+    const a = new host.SSH(); a.title = 'server';
+    const b = new host.SSH(); b.title = 'server backup';
+    const parent = new host.Split(); parent.panes = [a, b]; parent.focused = b;
+    host.app.tabs = [parent];
+    assert.equal(host.sftp.findSSHSession({}), null);
+    parent.hasFocus = true;
+    assert.equal(host.sftp.findSSHSession({}).tab, b);
+    const id = host.terminal.getOrCreateSessionId(a);
+    assert.equal(host.sftp.findSSHSession({ sessionId: id }).tab, a);
+    parent.panes = [b];
+    assert.equal(host.sftp.findSSHSession({ sessionId: id, tabIndex: 0 }), null);
+    parent.panes = [a, b];
+    assert.throws(() => host.sftp.findSSHSession({ title: 'server' }), /More than one/);
+});
+
+test('split pane identities are discoverable before their frontend initializes', () => {
+    const host = hostCategories();
+    const pane = new host.Terminal(); (pane as any).frontend = undefined;
+    const parent = new host.Split(); parent.panes = [pane]; host.app.tabs = [parent];
+    const id = host.terminal.getOrCreateSessionId(pane);
+    assert.equal(host.terminal.findSessionByLocator({ sessionId: id }).tab, pane);
+    assert.equal(host.terminal.findTerminalSessions()[0].sessionId, id);
+});
+
+import { Subject } from 'rxjs';
+import { execute } from '../packages/satellite/src/execute.ts';
+test('monitored execution rejects a second command and retains timed-out ownership until actual completion', { skip: process.platform === 'win32' }, async () => {
+    const host = hostCategories();
+    const terminal: any = new host.Terminal(); terminal.profile = { name: 'bash' }; terminal.hasFocus = true;
+    const output = new Subject<string>(); const binary = new Subject<Buffer>();
+    terminal.session = { open: true, output$: output, binaryOutput$: binary }; terminal.destroyed = new Subject<void>();
+    let input = '';
+    terminal.sendInput = (data: string) => { input = data; };
+    host.app.tabs = [terminal]; (host.app as any).selectTab = () => {};
+    const id = host.terminal.getOrCreateSessionId(terminal);
+    const first: any = execute(host.terminal, { sessionId: id, command: 'printf actual-output', timeout: 5 });
+    await assert.rejects(execute(host.terminal, { sessionId: id, command: 'false' }), /One monitored/);
+    const timeoutResult = JSON.parse((await first).content[0].text);
+    assert.equal(timeoutResult.error, 'TIMEOUT'); assert.equal(timeoutResult.outcomeUnknown, true);
+    await assert.rejects(execute(host.terminal, { sessionId: id, command: 'false' }), /One monitored/);
+    const completed = execFileSync('/bin/bash', ['-c', input.replace(/\r$/, '')], { encoding: 'utf8' });
+    binary.next(Buffer.from(completed));
+    assert.equal(host.terminal._activeCommands.size, 0);
+    const next: any = execute(host.terminal, { sessionId: id, command: "printf 'héllo'", timeout: 1000 });
+    const bytes = execFileSync('/bin/bash', ['-c', input.replace(/\r$/, '')]);
+    for (const byte of bytes) binary.next(Buffer.from([byte]));
+    assert.equal(JSON.parse((await next).content[0].text).output, 'héllo');
+    binary.complete(); output.complete(); terminal.destroyed.complete();
+});

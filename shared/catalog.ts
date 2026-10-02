@@ -1,19 +1,19 @@
 // Adapted from GentlemanHu/Tabby-MCP (MIT, copyright 2026 GentlemanHu).
 // Source revision 86a52fdfadb724959929f052c1fc89a45c9f1b0f. See THIRD_PARTY_NOTICES.md.
-import { z } from 'zod';
+import { z } from 'zod4';
 import { HubError, type Scope, type Principal } from './protocol.js';
 
 const sessionSchema = { sessionId: z.string().optional(), tabIndex: z.number().optional(), title: z.string().optional(), profileName: z.string().optional() };
 const targetShape = { windowId: z.string().uuid().optional(), tabId: z.string().max(512).optional(),
   sessionId: z.string().max(512).optional(), profileId: z.string().max(512).optional(),
   transferId: z.string().max(512).optional() };
-function targets(schema: z.AnyZodObject): z.AnyZodObject {
+function targets(schema: z.ZodObject<any>): z.ZodObject<any> {
   const shape = { ...schema.shape, ...targetShape };
   if (shape.tabIndex) shape.tabIndex = shape.tabIndex.optional();
   return z.object(shape).strict();
 }
 export interface ToolDefinition {
-  name: string; description: string; schema: z.AnyZodObject; scopes: readonly Scope[]; aggregate: boolean;
+  name: string; description: string; schema: z.ZodObject<any>; scopes: readonly Scope[]; aggregate: boolean;
 }
 export const TOOLS: readonly ToolDefinition[] = [
   { name: 'list_tabs', description: `List all open tabs in Tabby with stable IDs and metadata.
@@ -151,6 +151,7 @@ Session targeting: sessionId (recommended) > tabIndex > title > profileName`, sc
   { name: 'get_session_environment', description: `Get the environment context of a terminal session (e.g., bash, python, node, database REPL).
 Use this before sending complex commands to ensure the session is in the expected state.
 Session targeting: sessionId (recommended) > tabIndex > title > profileName`, schema: targets(z.object({
+                activeProbe: z.boolean().optional().describe('Run an explicit active probe; requires terminal:write'),
                 sessionId: z.string().optional().describe('Stable session ID (recommended)'),
                 tabIndex: z.number().optional().describe('Tab index (legacy)'),
                 title: z.string().optional().describe('Match by title'),
