@@ -143,3 +143,24 @@ test('maximum command timeout returns monitored TIMEOUT within the observation m
     assert.deepEqual(await pending, { success: false, error: 'TIMEOUT', outcomeUnknown: true, stillMonitored: true });
   } finally { registry.close(); }
 });
+
+test('fractional profile deadlines remain valid wire requests without cancelling other calls', async () => {
+  const registry = new WindowRegistry(), windowId = randomUUID(), requests: any[] = [];
+  registry.register({ type: 'register', protocol: 1, windowId, metadata: {},
+    capabilities: ['open_profile', 'quick_connect', 'list_tabs'],
+    snapshot: { tabs: [], sessions: [], profiles: [], transfers: [] } }, message => {
+    if (message.type === 'request') requests.push(wireMessageSchema.parse(message));
+  });
+  try {
+    const calls = [registry.call('list_tabs', { windowId }, LOCAL_PRINCIPAL),
+      registry.call('open_profile', { windowId, profileName: 'local', timeout: 30000.5 }, LOCAL_PRINCIPAL),
+      registry.call('quick_connect', { windowId, query: 'fixture', timeout: 30000.5 }, LOCAL_PRINCIPAL)];
+    assert.equal(requests.length, 3);
+    for (const request of requests) {
+      assert.equal(request.timeoutMs, request.operation === 'list_tabs' ? 155000 : 155001);
+      registry.receive(windowId, request.epoch, { type: 'response', windowId, epoch: request.epoch,
+        id: request.id, result: { done: request.operation } });
+    }
+    assert.deepEqual(await Promise.all(calls), [{ done: 'list_tabs' }, { done: 'open_profile' }, { done: 'quick_connect' }]);
+  } finally { registry.close(); }
+});

@@ -546,9 +546,9 @@ test('production output routing rotates changed sources, closes lost sources and
     const pane = { session: { output$: source as unknown, binaryOutput$: undefined as unknown }, destroyed };
     const parent = {};
     const session = { sessionId: 'pane', tab: pane, tabParent: parent };
-    const terminal = { mcpTools: [], findTerminalSessions: () => [session], findSessionByLocator: () => session };
+    const terminal = { mcpTools: [{ name: 'list_profiles', handler: async () => ({ profiles: [] }) }], findTerminalSessions: () => [session], findSessionByLocator: () => session };
     const service = new SatelliteService({ tabs: [parent] }, { store: {} }, { run: (callback: () => unknown) => callback() },
-        terminal, { mcpTools: [] }, { mcpTools: [] }, { windowID: 1 });
+        terminal, { mcpTools: [], getOrCreateTabId: () => 'tab' }, { mcpTools: [], getTransfers: () => [] }, { windowID: 1 });
     const read = async (params = {}) => JSON.parse((await service.run('read_terminal_output', { sessionId: 'pane', ...params },
         protocol.LOCAL_PRINCIPAL, new AbortController().signal)).content[0].text);
     try {
@@ -558,10 +558,14 @@ test('production output routing rotates changed sources, closes lost sources and
         assert.equal(source.observed, true); assert.equal(destroyed.observed, true);
         const switching = read({ cursor: original.cursor, waitMs: 25000 });
         pane.session.binaryOutput$ = direct;
-        const switched = await read({ cursor: original.cursor });
+        await service.snapshot();
+        // No read or emission may recreate the replacement ring before this waiter resumes.
         const awakened = await timeout(switching);
+        const switched = await read({ cursor: original.cursor });
         assert.equal(switched.gap, true); assert.equal(switched.bytes, 0);
         assert.equal(awakened.gap, true); assert.equal(awakened.bytes, 0);
+        assert.notEqual(awakened.cursor, original.cursor);
+        assert.equal(awakened.cursor, switched.cursor);
         assert.equal(source.observed, false); assert.equal(direct.observed, true);
         source.next('stale output'); direct.next('direct output');
         original = await read({ cursor: switched.cursor });
@@ -570,7 +574,7 @@ test('production output routing rotates changed sources, closes lost sources and
         const closed = assert.rejects(timeout(pending), { code: 'SESSION_CLOSED' });
         pane.session.binaryOutput$ = undefined;
         pane.session.output$ = undefined;
-        await assert.rejects(read(), { code: 'UNSUPPORTED_STREAM' });
+        await service.snapshot();
         await closed;
         assert.equal(source.observed, false); assert.equal(destroyed.observed, false);
         assert.equal(direct.observed, false);
@@ -683,4 +687,32 @@ test('failed wrapper attachment restores the original session, tab ID and positi
         assert.equal(host.terminal.findSessionByLocator({ sessionId }).tab, original);
         assert.equal((original as any).parent, null); assert.equal(changed, 1); assert.equal(destroyedWrappers, 1);
     }
+});
+
+test('native PowerShell early return completes observation and releases the pane for another command', async t => {
+    const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
+    try { execFileSync(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'], { stdio: 'pipe' }); }
+    catch { t.skip('PowerShell runtime unavailable on this host'); return; }
+    const { spawn } = await import('node:child_process');
+    const child = spawn(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-'], { stdio: 'pipe' });
+    const host = hostCategories(), terminal: any = new host.Terminal(), binary = new Subject<Buffer>();
+    let errors = ''; child.stderr.on('data', data => { errors += data; });
+    child.stdout.on('data', data => binary.next(data));
+    child.on('error', error => binary.error(error));
+    child.on('exit', () => binary.complete());
+    terminal.profile = { name: shell }; terminal.session = { open: true, binaryOutput$: binary };
+    terminal.destroyed = new Subject<void>(); terminal.sendInput = (input: string) => child.stdin.write(input.replace(/\r$/, '\n') + '\n');
+    host.app.tabs = [terminal]; (host.app as any).selectTab = () => {};
+    (host.terminal as any).parseEnvironmentFromBuffer = () => ({ isShell: true, environment: 'powershell', promptClean: 'PS>' });
+    const id = host.terminal.getOrCreateSessionId(terminal);
+    const run = async (command: string) => JSON.parse((await execute(host.terminal, { sessionId: id, command, timeout: 10000 }) as any).content[0].text);
+    try {
+        const early = await run("$global:tabby_return_state='retained'; Write-Output hello; return");
+        assert.equal(early.error, 'OUTCOME_UNKNOWN', JSON.stringify({ early, errors }));
+        assert.equal(early.outcomeUnknown, true); assert.equal(early.success, false); assert.equal('exitCode' in early, false);
+        assert.match(early.output, /hello/); assert.equal(host.terminal._activeCommands.size, 0); assert.equal(binary.observed, false);
+        const next = await run('Write-Output $global:tabby_return_state');
+        assert.equal(next.success, true, JSON.stringify({ next, errors })); assert.equal(next.exitCode, 0);
+        assert.match(next.output, /retained/); assert.equal(host.terminal._activeCommands.size, 0);
+    } finally { child.stdin.end(); child.kill(); binary.complete(); terminal.destroyed.complete(); }
 });

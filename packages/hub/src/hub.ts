@@ -86,6 +86,7 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
       const body = await readSmallJson(req);
       if (typeof body.publicUrl !== 'string') throw new Error('publicUrl is required.');
       validatePublicUrl(body.publicUrl);
+      if (enablingPublic) await enablingPublic;
       if (config.publicUrl && config.publicUrl !== body.publicUrl) throw new Error('Changing an enrolled public origin requires a separate owner migration.');
       const previousUrl = config.publicUrl;
       config.publicUrl = body.publicUrl;

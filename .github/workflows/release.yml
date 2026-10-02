@@ -2,11 +2,13 @@ name: Build release archives
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 permissions:
   contents: read
 jobs:
+  check:
+    uses: ./.github/workflows/check.yml
   bundle:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +20,7 @@ jobs:
           node-version: 24.21.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
+      - run: pnpm build
       - run: pnpm release
       - name: Smoke-test Linux bundle independently of development dependencies
         run: |

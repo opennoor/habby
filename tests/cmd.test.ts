@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CommandCapture, commandWrapper } from '../packages/satellite/src/runtime.ts';
 
-// The ordinary Windows CI test glob runs these against actual cmd.exe and PS5.1.
+// Windows local and version-release test runs use actual cmd.exe and PS5.1.
 // Other hosts skip; a string-shape assertion is not evidence of native CMD parsing.
 function runCommands(t: any, commands: string[], setup = '') {
     const directory = mkdtempSync(join(tmpdir(), 'tabby-cmd-'));

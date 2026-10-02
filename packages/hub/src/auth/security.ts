@@ -3,17 +3,17 @@ import { request } from 'node:https';
 import { BlockList, isIP } from 'node:net';
 import type { IncomingMessage } from 'node:http';
 
-const blocked = new BlockList();
+const blockedV4 = new BlockList(), blockedV6 = new BlockList();
 for (const [address, prefix] of [['0.0.0.0',8],['10.0.0.0',8],['100.64.0.0',10],['127.0.0.0',8],['169.254.0.0',16],
   ['172.16.0.0',12],['192.0.0.0',24],['192.0.2.0',24],['192.31.196.0',24],['192.52.193.0',24],['192.88.99.0',24],['192.168.0.0',16],['192.175.48.0',24],['198.18.0.0',15],['198.51.100.0',24],
-  ['203.0.113.0',24],['224.0.0.0',4],['240.0.0.0',4]] as const) blocked.addSubnet(address, prefix, 'ipv4');
+  ['203.0.113.0',24],['224.0.0.0',4],['240.0.0.0',4]] as const) blockedV4.addSubnet(address, prefix, 'ipv4');
 for (const [address, prefix] of [['::',128],['::1',128],['::ffff:0:0',96],['64:ff9b::',96],['64:ff9b:1::',48],
-  ['100::',64],['2001::',23],['2001:db8::',32],['2002::',16],['3fff::',20],['fc00::',7],['fe80::',10],['ff00::',8]] as const) blocked.addSubnet(address,prefix,'ipv6');
+  ['100::',64],['2001::',23],['2001:db8::',32],['2002::',16],['3fff::',20],['fc00::',7],['fe80::',10],['ff00::',8]] as const) blockedV6.addSubnet(address,prefix,'ipv6');
 export function publicAddress(address: string): boolean {
   const family = isIP(address);
   if (!family) return false;
   if (family === 6 && !/^[23][0-9a-f]{3}:/i.test(address)) return false;
-  return !blocked.check(address, family === 6 ? 'ipv6' : 'ipv4');
+  return family === 6 ? !blockedV6.check(address, 'ipv6') : !blockedV4.check(address, 'ipv4');
 }
 
 /** Pin a public DNS result into the actual TLS connection, eliminating DNS rebinding and redirects. */
@@ -29,7 +29,7 @@ export async function safeMetadataFetch(input: string | URL, options?: RequestIn
   if (!addresses.length || addresses.some(record => !publicAddress(record.address))) throw new Error('Metadata hostname is not public.');
   const address = addresses[0];
   return new Promise<Response>((resolve, reject) => {
-    const req = request(url, { method: 'GET', headers: { accept: 'application/json' },
+    const req = request(url, { method: 'GET', headers: { accept: 'application/json' }, family: address.family,
       lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
       signal: AbortSignal.timeout(2500), rejectUnauthorized: true,
     }, res => {

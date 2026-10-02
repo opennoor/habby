@@ -147,7 +147,7 @@ export class WindowRegistry extends EventEmitter {
     const id = randomUUID();
     const mutation = TOOL_BY_NAME.get(operation)!.scopes.some(scope => scope !== 'terminal:read' && scope !== 'files:read') ||
       (operation === 'get_session_environment' && params.activeProbe !== false && principal.scopes.includes('terminal:write'));
-    const timeoutMs = operation === 'read_terminal_output' ? 35000 : Math.min(MAX_REQUEST_TIMEOUT_MS, Math.max(150000, Number(params.timeout ?? 30000) + 125000));
+    const timeoutMs = operation === 'read_terminal_output' ? 35000 : Math.ceil(Math.min(MAX_REQUEST_TIMEOUT_MS, Math.max(150000, Number(params.timeout ?? 30000) + 125000)));
     return new Promise((resolve, reject) => {
       const cancel = (code: string, message: string) => {
         if (!this.pending.delete(id)) return;

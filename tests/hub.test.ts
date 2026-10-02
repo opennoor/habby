@@ -253,3 +253,45 @@ test('failed auth origin commit rolls back persisted config and permits a fresh 
   assert.equal(attempts, 2);
   assert.equal((await fetch(`http://127.0.0.1:${config.publicPort}/.well-known/oauth-protected-resource/mcp`)).status, 200);
 });
+
+test('concurrent failed public setup restores the original config before retrying another origin', async t => {
+  const config = await temporaryConfig();
+  let started!: () => void, fail!: () => void, attempts = 0;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  const gate = new Promise<void>(resolve => { fail = resolve; });
+  const { createPublicAuth } = await import('../packages/hub/src/auth.js');
+  const hub = await startHub(config, { authFactory: async (input, options) => {
+    if (++attempts === 1) { started(); await gate; throw new Error('setup failed'); }
+    return createPublicAuth(input, options);
+  } });
+  t.after(async () => { fail(); await hub.close(); await rm(config.stateDir, { recursive: true, force: true }); });
+  const { adminCredential } = JSON.parse(await readFile(join(config.stateDir, 'secrets.json'), 'utf8'));
+  const trust = JSON.parse(await readFile(join(config.stateDir, 'satellite.json'), 'utf8'));
+  // Wait until both request bodies have reached the real admin handler.
+  const parse = JSON.parse;
+  let parsed!: () => void, bodies = 0;
+  const bothParsed = new Promise<void>(resolve => { parsed = resolve; });
+  t.mock.method(JSON, 'parse', (text: string, ...args: any[]) => {
+    const value = parse(text, ...args);
+    if (text === '{"publicUrl":"https://failed.example/mcp"}' && ++bodies === 2) parsed();
+    return value;
+  });
+  const configure = (publicUrl: string) => new Promise<number>((resolve, reject) => {
+    const req = secureRequest(`https://127.0.0.1:${config.satellitePort}/admin/configure`, {
+      method: 'POST', ca: trust.certificate, headers: { authorization: `Bearer ${adminCredential}`, 'content-type': 'application/json' },
+    }, res => { res.resume(); res.on('end', () => resolve(res.statusCode!)); });
+    req.on('error', reject); req.end(JSON.stringify({ publicUrl }));
+  });
+  const first = configure('https://failed.example/mcp'); await entered;
+  const second = configure('https://failed.example/mcp');
+  await bothParsed;
+  await new Promise(resolve => setImmediate(resolve));
+  fail();
+  assert.deepEqual(await Promise.all([first, second]), [500, 500]);
+  assert.equal(attempts, 1); assert.equal(config.publicUrl, undefined);
+  assert.equal(JSON.parse(await readFile(join(config.stateDir, 'config.json'), 'utf8')).publicUrl, undefined);
+  assert.equal(await configure('https://retry.example/mcp'), 200);
+  assert.equal(attempts, 2); assert.equal(config.publicUrl, 'https://retry.example/mcp');
+  const store = await openStore(config.stateDir);
+  try { assert.equal(store.get('public-origin'), 'https://retry.example'); } finally { store.close(); }
+});

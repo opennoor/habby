@@ -67,6 +67,7 @@ export class SatelliteService implements SatelliteAdapter, OnDestroy {
                 this.streams.delete(session.sessionId);
                 continue;
             }
+            this.output.append(session.sessionId, '');
             const subscription = source.subscribe((data: string | Buffer) => this.output.append(session.sessionId, data));
             const destroyed = (session.tab as any).destroyed?.subscribe(() => { this.output.close(session.sessionId); subscription.unsubscribe(); });
             this.streams.set(session.sessionId, { source, subscription, destroyed });
