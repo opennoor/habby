@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+.pnp.*
+
+# Build output and TypeScript cache
+dist/
+build/
+*.tsbuildinfo
+.cache/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Operating system files
+.DS_Store
+Thumbs.db
