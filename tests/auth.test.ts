@@ -260,12 +260,13 @@ test('anonymous browser floods are bounded across routes without evicting owners
     const protectedRows = db.prepare("SELECT key,value FROM owner_state WHERE key LIKE 'session:%'").all();
     assert.equal(protectedRows.length, 2);
     const insert = db.prepare('INSERT INTO owner_state VALUES(?,?,?)');
-    for (let index = 0; index < 254; index++) {
+    for (let index = 0; index < 300; index++) {
       const key = 'session:flood-' + String(index).padStart(3, '0');
       insert.run(key, JSON.stringify({ owner: false, enroll: false, csrf: 'unused', generation: 0 }), Date.now() + 60_000 + index);
       insert.run('challenge:' + key, '{"kind":"authenticate","value":"unused"}', Date.now() + 60_000);
     }
-    const returning = f.browser(); assert.equal((await returning.request('/owner/login')).status, 200);
+    await f.restart();
+    const returning = f.browser(); assert.equal((await returning.request('/owner/login')).status, 200, 'a legacy anonymous surplus must not lock out a new device');
     for (let index = 0; index < 35; index++) assert.equal((await returning.request('/owner/login')).status, 200, 'valid cookie must bypass fresh-session limits');
     const routes = ['/owner/login', '/owner/unknown', '/interaction/missing', '/approve?code=missing'];
     let rateLimited = 0;

@@ -47,8 +47,8 @@ export class AuthStore {
     if (key.startsWith('session:') && !this.get(key)) {
       const count = () => (this.db.prepare("SELECT COUNT(*) AS count FROM owner_state WHERE key LIKE 'session:%'").get() as { count: number }).count;
       if (count() >= 256) {
-        const unused = this.db.prepare("SELECT key FROM owner_state WHERE key LIKE 'session:%' AND json_extract(value,'$.owner')=0 AND json_extract(value,'$.enroll')=0 ORDER BY expires,key LIMIT 1").get() as { key: string } | undefined;
-        if (unused) { this.take(unused.key); this.take('challenge:' + unused.key); }
+        this.db.prepare("DELETE FROM owner_state WHERE key IN (SELECT key FROM owner_state WHERE key LIKE 'session:%' AND json_extract(value,'$.owner')=0 AND json_extract(value,'$.enroll')=0 ORDER BY expires,key LIMIT ?)").run(count() - 255);
+        this.db.prepare("DELETE FROM owner_state WHERE key LIKE 'challenge:session:%' AND NOT EXISTS (SELECT 1 FROM owner_state AS sessions WHERE sessions.key=substr(owner_state.key,11))").run();
       }
       if (count() >= 256) throw new HubError('RATE_LIMITED', 'Browser session capacity reached. Try again after a session expires.');
     }
