@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { initializeState } from '../packages/hub/src/state.js';
 import { openStore } from '../packages/hub/src/auth/store.js';
+import { doctor } from '../packages/hub/src/install.js';
 
 test('native Windows state replaces unsafe explicit ACLs before writing secrets', { skip: process.platform !== 'win32' }, async t => {
   const stateDir = await mkdtemp(join(process.env.TABBY_HUB_NATIVE_TEST_ROOT ?? tmpdir(), 'tabby-state-acl-'));
@@ -18,11 +19,18 @@ test('native Windows state replaces unsafe explicit ACLs before writing secrets'
   const identity = await powershell(`$id=[System.Security.Principal.WindowsIdentity]::GetCurrent(); $principal=New-Object System.Security.Principal.WindowsPrincipal($id);
     @{sid=$id.User.Value; admin=$principal.IsInRole([System.Security.Principal.WindowsBuiltinRole]::Administrator)} | ConvertTo-Json -Compress`);
   if (process.env.TABBY_HUB_REQUIRE_STANDARD_USER === '1') assert.equal(identity.admin, false, 'Native acceptance must run with a standard user token.');
-  await initializeState(stateDir);
+  const state = await initializeState(stateDir);
   (await openStore(stateDir)).close();
   const original = await readFile(join(stateDir, 'secrets.json'), 'utf8');
   await execute('icacls.exe', [stateDir, '/grant', '*S-1-1-0:(OI)(CI)R']);
-  for (const file of ['secrets.json', 'auth.sqlite']) await execute('icacls.exe', [join(stateDir, file), '/grant', '*S-1-1-0:R']);
+  const files = ['config.json', 'satellite.json', 'secrets.json', 'auth.sqlite'];
+  for (const file of files) await execute('icacls.exe', [join(stateDir, file), '/grant', '*S-1-1-0:R']);
+  const descriptors = () => powershell(`ConvertTo-Json -Compress -InputObject @(@('','config.json','satellite.json','secrets.json','auth.sqlite') | ForEach-Object {
+    (Get-Acl -LiteralPath ([IO.Path]::Combine($env:TABBY_HUB_PRIVATE_STATE_DIR,$_))).Sddl})`);
+  const unsafeDescriptors = await descriptors();
+  const unsafeChecks = await doctor({ ...state.config, trustedPort: 1 });
+  for (const name of ['state-directory', ...files]) assert.equal(unsafeChecks.find(check => check.name === name)?.ok, false, `${name}: doctor must detect unsafe ACLs`);
+  assert.deepEqual(await descriptors(), unsafeDescriptors, 'Doctor must not repair directory or file ACLs.');
   await initializeState(stateDir);
   (await openStore(stateDir)).close();
   const acl = await powershell(`$acl=Get-Acl -LiteralPath $env:TABBY_HUB_PRIVATE_STATE_DIR;
@@ -38,6 +46,8 @@ test('native Windows state replaces unsafe explicit ACLs before writing secrets'
     assert.deepEqual(fileAcl, [identity.sid]);
   }
   assert.equal(await readFile(join(stateDir, 'secrets.json'), 'utf8'), original);
+  const privateChecks = await doctor({ ...state.config, trustedPort: 1 });
+  for (const name of ['state-directory', ...files]) assert.equal(privateChecks.find(check => check.name === name)?.ok, true, `${name}: doctor must recognize repaired private ACLs`);
   assert.ok(JSON.parse(await readFile(join(stateDir, 'secrets.json'), 'utf8')).credential);
   if (process.env.TABBY_HUB_ACL_PROBE_MANIFEST) {
     await writeFile(process.env.TABBY_HUB_ACL_PROBE_MANIFEST, JSON.stringify({ stateDir, file: join(stateDir, 'secrets.json'), database: join(stateDir, 'auth.sqlite') }));

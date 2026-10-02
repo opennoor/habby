@@ -4,6 +4,7 @@ import { chmod, lstat, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Adapter, AdapterPayload } from 'oidc-provider';
 import { privateDirectory } from '../state.js';
+import { HubError } from '../../../../shared/protocol.js';
 
 export const secret = () => randomBytes(32).toString('base64url');
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -19,6 +20,7 @@ export class AuthStore {
       AND NOT EXISTS (SELECT 1 FROM grants WHERE client_id=json_extract(payload, '$.client_id') AND revoked=0 AND expires>?)`).run(Date.now());
     this.db.prepare('DELETE FROM oauth WHERE expires IS NOT NULL AND expires<=?').run(Date.now());
     this.db.prepare('DELETE FROM owner_state WHERE expires IS NOT NULL AND expires<=?').run(Date.now());
+    this.db.prepare("DELETE FROM owner_state WHERE key LIKE 'challenge:session:%' AND NOT EXISTS (SELECT 1 FROM owner_state AS sessions WHERE sessions.key=substr(owner_state.key,11))").run();
     this.db.prepare('DELETE FROM manual_tokens WHERE expires<=?').run(Date.now());
     this.nextCleanup = Date.now() + 60_000;
   }
@@ -42,6 +44,15 @@ export class AuthStore {
   }
   set(key: string, value: unknown, expires?: number) {
     this.cleanup();
+    if (key.startsWith('session:') && !this.get(key)) {
+      const count = () => (this.db.prepare("SELECT COUNT(*) AS count FROM owner_state WHERE key LIKE 'session:%'").get() as { count: number }).count;
+      if (count() >= 256) {
+        const unused = this.db.prepare("SELECT key FROM owner_state WHERE key LIKE 'session:%' AND json_extract(value,'$.owner')=0 AND json_extract(value,'$.enroll')=0 ORDER BY expires,key LIMIT 1").get() as { key: string } | undefined;
+        if (unused) { this.take(unused.key); this.take('challenge:' + unused.key); }
+      }
+      if (count() >= 256) throw new HubError('RATE_LIMITED', 'Browser session capacity reached. Try again after a session expires.');
+    }
+    if (key.startsWith('challenge:session:') && !this.get(key.slice(10))) throw new Error('Owner browser session expired. Start again.');
     this.db.prepare('INSERT OR REPLACE INTO owner_state VALUES(?,?,?)').run(key, JSON.stringify(value), expires ?? null);
   }
   take<T>(key: string): T | undefined {

@@ -97,8 +97,7 @@ Creates a new pane with a copy of the current terminal.
 Direction: 'right'/'left'/'top'/'bottom' (or shorthand 'r'/'l'/'t'/'b')
 The active tab must be inside a SplitTabComponent, or be a terminal that can be wrapped.`, schema: targets(z.object({
                 direction: z.enum(['horizontal', 'vertical', 'right', 'left', 'top', 'bottom', 'r', 'l', 't', 'b'])
-                    .describe('Split direction: right/left/top/bottom (or r/l/t/b), or horizontal/vertical'),
-                ratio: z.number().optional().describe('Split ratio (0.1 to 0.9, default: 0.5) - not yet implemented')
+                    .describe('Split direction: right/left/top/bottom (or r/l/t/b), or horizontal/vertical')
             })), scopes: ['terminal:manage'], aggregate: false },
   { name: 'get_session_list', description: `Get list of all terminal sessions with stable IDs and metadata.
 Use sessionId (stable UUID) for reliable session targeting.

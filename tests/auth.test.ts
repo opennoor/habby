@@ -248,6 +248,55 @@ test('real OAuth PKCE code flow binds resource and phone approval to original br
   } finally {await f.close();}
 });
 
+test('anonymous browser floods are bounded across routes without evicting owners or enrollment', async () => {
+  const f = await fixture();
+  const db = new DatabaseSync(join(f.config.stateDir, 'auth.sqlite'));
+  try {
+    const owner = f.browser(); await f.enroll(owner);
+    const enrolling = f.browser();
+    assert.equal((await enrolling.request(await f.auth.enrollmentLink())).status, 303);
+    const enrollCsrf = await f.csrf(enrolling, '/owner/enroll');
+    assert.equal((await enrolling.post('/owner/register/options', {}, enrollCsrf)).status, 200);
+    const protectedRows = db.prepare("SELECT key,value FROM owner_state WHERE key LIKE 'session:%'").all();
+    assert.equal(protectedRows.length, 2);
+    const insert = db.prepare('INSERT INTO owner_state VALUES(?,?,?)');
+    for (let index = 0; index < 254; index++) {
+      const key = 'session:flood-' + String(index).padStart(3, '0');
+      insert.run(key, JSON.stringify({ owner: false, enroll: false, csrf: 'unused', generation: 0 }), Date.now() + 60_000 + index);
+      insert.run('challenge:' + key, '{"kind":"authenticate","value":"unused"}', Date.now() + 60_000);
+    }
+    const returning = f.browser(); assert.equal((await returning.request('/owner/login')).status, 200);
+    for (let index = 0; index < 35; index++) assert.equal((await returning.request('/owner/login')).status, 200, 'valid cookie must bypass fresh-session limits');
+    const routes = ['/owner/login', '/owner/unknown', '/interaction/missing', '/approve?code=missing'];
+    let rateLimited = 0;
+    for (let index = 0; index < 35; index++) {
+      const response = await f.browser().request(routes[index % routes.length]);
+      if (response.status === 429) { rateLimited++; assert.equal(response.headers.get('set-cookie'), null); }
+      else assert.ok([200, 400].includes(response.status), await response.clone().text());
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM owner_state WHERE key LIKE 'session:%'").get()?.n, 256);
+    }
+    assert.ok(rateLimited > 0, 'fresh anonymous HTTP sessions must be rate limited');
+    for (const row of protectedRows) assert.equal(db.prepare('SELECT value FROM owner_state WHERE key=?').get(row.key)?.value, row.value);
+    assert.ok(db.prepare("SELECT value FROM owner_state WHERE key LIKE 'challenge:session:%' AND json_extract(value,'$.kind')='register'").get(), 'enrollment challenge must survive');
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM owner_state WHERE key LIKE 'challenge:session:%' AND NOT EXISTS (SELECT 1 FROM owner_state AS sessions WHERE sessions.key=substr(owner_state.key,11))").get()?.n, 0);
+    assert.equal((await owner.request('/owner')).status, 200);
+    assert.equal((await enrolling.request('/owner/enroll')).status, 200);
+  } finally { db.close(); await f.close(); }
+});
+
+test('rate-limited enrollment preserves its one-use link for an existing browser', async () => {
+  const f = await fixture();
+  try {
+    const returning = f.browser(); assert.equal((await returning.request('/owner/login')).status, 200);
+    for (let index = 0; index < 29; index++) assert.equal((await f.browser().request('/owner/login')).status, 200);
+    const link = await f.auth.enrollmentLink();
+    assert.equal((await f.browser().request(link)).status, 429);
+    assert.equal((await returning.request(link)).status, 303, 'creation rejection must not consume the enrollment link');
+    assert.equal((await returning.request('/owner/enroll')).status, 200);
+    assert.equal((await returning.request(link)).status, 400, 'successful enrollment still consumes the link exactly once');
+  } finally { await f.close(); }
+});
+
 test('anonymous client floods remain bounded and reclaim capacity without removing approved or local clients', async () => {
   const f = await fixture();
   const db = new DatabaseSync(join(f.config.stateDir, 'auth.sqlite'));

@@ -19,6 +19,12 @@ test('full catalog exposes 36 original tools and both Hub additions', () => {
   assert.equal(TOOL_BY_NAME.get('exec_command')?.schema.safeParse({ command: 'whoami' }).success, true);
   assert.equal(TOOL_BY_NAME.get('sftp_list_transfers')?.schema.safeParse({ status: 'unknown' }).success, true);
 });
+test('split schema rejects unsupported ratios instead of silently ignoring them', () => {
+  const schema = TOOL_BY_NAME.get('split_tab')!.schema;
+  for (const direction of ['left', 'right', 'top', 'bottom', 'horizontal', 'vertical']) assert.equal(schema.safeParse({ direction }).success, true);
+  for (const ratio of [0, 0.2, 0.5, 0.9, 1]) assert.equal(schema.safeParse({ direction: 'right', ratio }).success, false);
+});
+
 test('scopes distinguish reads, shell writes and host-file transfers', () => {
   const read = { id: 'reader', scopes: ['terminal:read', 'files:read'] };
   authorize(read, 'get_terminal_buffer');

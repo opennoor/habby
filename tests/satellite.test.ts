@@ -292,6 +292,12 @@ test('production handler catalog includes all 36 upstream tools', () => {
     const host = hostCategories();
     assert.equal(new Set([...host.terminal.mcpTools, ...host.tabs.mcpTools, ...host.sftp.mcpTools].map(tool => tool.name)).size, 36);
 });
+test('satellite split schema accepts directions and rejects unsupported layout ratios', () => {
+    const host = hostCategories();
+    const tool = host.tabs.mcpTools.find((tool: any) => tool.name === 'split_tab');
+    assert.equal(tool.schema.safeParse({ direction: 'right' }).success, true);
+    assert.equal(tool.schema.safeParse({ direction: 'right', ratio: 0.2 }).success, false);
+});
 test('close tab reports success only after the host removes the target', async () => {
     const host = hostCategories();
     const tab = new host.Terminal(); tab.title = 'retained'; host.app.tabs = [tab];

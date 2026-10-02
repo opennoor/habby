@@ -99,11 +99,14 @@ export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
   });
   const callback = provider.callback();
   const rates = new Map<string, { count: number; start: number }>();
-  const limit = (req: IncomingMessage, bucket: string, max = 30) => {
-    const key = `${bucket}:${req.socket.remoteAddress ?? 'unknown'}`; const now = Date.now();
+  const limit = (req: IncomingMessage, bucket: string, max = 30, global = false) => {
+    const key = `${bucket}:${global ? 'all' : req.socket.remoteAddress ?? 'unknown'}`; const now = Date.now();
     const old = rates.get(key); const value = old && now - old.start < 60_000 ? old : { count: 0, start: now };
+    if (!old && rates.size >= 1024) {
+      for (const [key, value] of rates) if (now - value.start >= 60_000) rates.delete(key);
+      if (rates.size >= 1024) throw new HubError('RATE_LIMITED', 'Too many attempts. Wait one minute.');
+    }
     value.count++; rates.set(key, value);
-    if (rates.size > 1024) for (const [key, value] of rates) if (now - value.start > 60_000) rates.delete(key);
     if (value.count > max) throw new HubError('RATE_LIMITED', 'Too many attempts. Wait one minute.');
   };
   function secureHeaders(req: IncomingMessage) {
@@ -126,9 +129,11 @@ export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
     const session = key ? store.get<OwnerSession>(key) : undefined;
     if (session && session.generation === generation()) return { session, key };
     if (!create) return undefined;
+    limit(req, 'browser-session');
+    limit(req, 'browser-session-global', 120, true);
     const fresh = secret(); const nextKey = 'session:' + digest(fresh);
     const next = { owner: false, enroll: false, csrf: secret(), generation: generation() };
-    store.set(nextKey, next, Date.now() + 12 * 3600 * 1000);
+    store.set(nextKey, next, Date.now() + 15 * 60_000);
     res.setHeader('Set-Cookie', `${COOKIE}=${fresh}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=43200`);
     return { session: next, key: nextKey };
   }
@@ -143,8 +148,7 @@ export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
     return `const BASE=${JSON.stringify(base)};const CSRF=${JSON.stringify(session.csrf)};${browserHelpers}${extra}`;
   }
   function credentials() { return store.db.prepare('SELECT * FROM credentials').all() as CredentialRow[]; }
-  function ownerPage(req: IncomingMessage, res: ServerResponse, enroll: boolean) {
-    const context = browserSession(req, res, true)!;
+  function ownerPage(res: ServerResponse, enroll: boolean, context: { session: OwnerSession; key: string }) {
     if (context.session.owner || enroll) {
       if (!context.session.owner && !context.session.enroll) throw new Error('Use the one-use enrollment link created on the host.');
       reply(res, 200, page('Owner passkeys', `<p>Register a passkey for ${html(resource.hostname)}. Add a second passkey for recovery.</p><button onclick="passkey('register')">Add passkey</button><p><a id="continue" href="${html(base)}/owner" hidden>Continue to agent management</a></p>`, browserScript(context.session, '')), 'text/html');
@@ -257,9 +261,11 @@ export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
       }
       if (req.method === 'GET' && path === base + '/owner/enroll' && url.searchParams.has('code')) {
         limit(req, 'enrollment', 10);
-        const valid = store.take<{ generation: number }>('bootstrap:' + digest(url.searchParams.get('code')!));
+        const bootstrapKey = 'bootstrap:' + digest(url.searchParams.get('code')!);
+        const valid = store.get<{ generation: number }>(bootstrapKey);
         if (!valid || valid.generation !== generation()) throw new Error('Enrollment link expired or was already used.');
-        const context = browserSession(req, res, true)!; context.session.enroll = true;
+        const context = browserSession(req, res, true)!;
+        store.take(bootstrapKey); context.session.enroll = true;
         store.set(context.key, context.session, Date.now() + 10 * 60_000);
         redirect(res, origin + base + '/owner/enroll'); return true;
       }
@@ -363,10 +369,10 @@ export async function createPublicAuth(config: HubConfig): Promise<PublicAuth> {
         }
         throw new Error('Unsupported interaction request.');
       }
-      if (req.method === 'GET' && path === base + '/owner/enroll') { ownerPage(req, res, true); return true; }
-      if (req.method === 'GET' && path === base + '/owner/login') { ownerPage(req, res, false); return true; }
+      if (req.method === 'GET' && path === base + '/owner/enroll') { ownerPage(res, true, context); return true; }
+      if (req.method === 'GET' && path === base + '/owner/login') { ownerPage(res, false, context); return true; }
       if (req.method === 'GET' && path === base + '/owner') {
-        if (!context.session.owner) { ownerPage(req, res, false); return true; }
+        if (!context.session.owner) { ownerPage(res, false, context); return true; }
         const grants = store.db.prepare('SELECT * FROM grants WHERE revoked=0 AND expires>? ORDER BY created DESC').all(Date.now()) as GrantRow[];
         const rows = grants.map(grant => `<li><strong>${html(grant.client_id)}</strong><p>${html(JSON.parse(grant.scopes).join(', '))}</p><small>Expires ${html(new Date(grant.expires).toISOString())}</small><p><button data-id="${html(grant.id)}" onclick="revoke(this.dataset.id)">Revoke agent</button></p></li>`).join('');
         reply(res, 200, page('Agent access', `<ul>${rows || '<li>No approved agents.</li>'}</ul><p><a href="${html(base)}/owner/enroll">Add a second passkey</a></p><details><summary>Approve from an agent approval code</summary><input id="approval-code"><button onclick="location.href=BASE+'/approve?code='+encodeURIComponent(document.getElementById('approval-code').value)">Open request</button></details><details><summary>Create a compatibility token</summary><label>Name<input id="name"></label>${SCOPES.map(scope => `<label><input type="checkbox" name="manual-scope" value="${scope}">${scope}</label>`).join('')}<label>Expires in hours (maximum 24)<input id="hours" type="number" value="1" min="1" max="24"></label><button onclick="manual()">Create token</button><pre id="token"></pre><p>The token is shown once. Store it privately.</p></details><details><summary>Register a client in advance</summary><label>Name<input id="client-name"></label><label>Exact callback URL<input id="redirect"></label><button onclick="registerClient()">Register client</button><pre id="client"></pre></details><button onclick="logout()">Sign out</button>`, browserScript(context.session, `async function revoke(id){await post(BASE+'/owner/revoke',{id});location.reload();}async function manual(){try{const r=await post(BASE+'/owner/token',{name:document.getElementById('name').value,scopes:[...document.querySelectorAll('input[name=manual-scope]:checked')].map(i=>i.value),hours:Number(document.getElementById('hours').value)});document.getElementById('token').textContent=r.token;}catch(e){message.textContent=e.message;}}async function registerClient(){try{const r=await post(BASE+'/owner/clients',{client_name:document.getElementById('client-name').value,redirect_uris:[document.getElementById('redirect').value]});document.getElementById('client').textContent=JSON.stringify(r,null,2);}catch(e){message.textContent=e.message;}}async function logout(){await post(BASE+'/owner/logout',{});location.reload();}`)), 'text/html'); return true;

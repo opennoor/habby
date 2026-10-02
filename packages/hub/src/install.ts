@@ -131,13 +131,42 @@ export async function uninstallHub(config: HubConfig, options: Omit<InstallOptio
 export async function doctor(config: HubConfig): Promise<Array<{ name: string; ok: boolean; detail: string }>> {
   const [major, minor, patch] = process.versions.node.split('.').map(Number);
   const checks = [{ name: 'runtime', ok: major > 24 || (major === 24 && (minor > 21 || (minor === 21 && patch >= 0))), detail: process.versions.node }];
-  for (const file of ['config.json', 'satellite.json']) {
-    const p = path.join(config.stateDir, file);
+  const entries = process.platform === 'win32' ? [
+    { name: 'state-directory', p: config.stateDir, directory: true },
+    ...['config.json', 'satellite.json', 'secrets.json', 'auth.sqlite', 'auth.sqlite-wal', 'auth.sqlite-shm'].map(name => ({ name, p: path.join(config.stateDir, name), optional: name.startsWith('auth.sqlite') })),
+  ] : ['config.json', 'satellite.json'].map(name => ({ name, p: path.join(config.stateDir, name) }));
+  let privatePaths: Record<string, boolean> = {};
+  if (process.platform === 'win32') {
+    const script = `$ErrorActionPreference='Stop'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
+      $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $result=@{}
+      foreach($path in (ConvertFrom-Json $env:TABBY_HUB_DOCTOR_PATHS)) {
+        $ok=$false
+        try {
+          $item=Get-Item -Force -LiteralPath $path
+          if($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Links are not private state.' }
+          $acl=$item.GetAccessControl([Security.AccessControl.AccessControlSections]'Access,Owner')
+          $rules=$acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])
+          $ok=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq $sid.Value -and $rules.Count -gt 0
+          foreach($rule in $rules) { if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -ne $sid.Value) { $ok=$false } }
+        } catch { $ok=$false }
+        $result[$path]=$ok
+      }; ConvertTo-Json -Compress -InputObject $result`;
+    try {
+      const result = await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+        { windowsHide: true, timeout: 30000, env: { ...process.env, TABBY_HUB_DOCTOR_PATHS: JSON.stringify(entries.map(entry => entry.p)) } });
+      privatePaths = JSON.parse(result.stdout);
+    } catch { /* A failed ACL inspection cannot establish privacy. */ }
+  }
+  for (const entry of entries) {
+    const { name, p } = entry;
     try {
       const stat = await lstat(p);
-      const privateFile = process.platform === 'win32' || (stat.mode & 0o077) === 0;
-      checks.push({ name: file, ok: stat.isFile() && !stat.isSymbolicLink() && privateFile, detail: privateFile ? p : `Permissions must be private: ${p}` });
-    } catch { checks.push({ name: file, ok: false, detail: `Missing: ${p}` }); }
+      const privateFile = process.platform === 'win32' ? privatePaths[p] === true : (stat.mode & 0o077) === 0;
+      const expectedType = 'directory' in entry && entry.directory ? stat.isDirectory() : stat.isFile();
+      checks.push({ name, ok: expectedType && !stat.isSymbolicLink() && privateFile, detail: privateFile ? p : `Permissions must be private: ${p}` });
+    } catch (error) {
+      if (!('optional' in entry && entry.optional && (error as NodeJS.ErrnoException).code === 'ENOENT')) checks.push({ name, ok: false, detail: `Missing or unreadable: ${p}` });
+    }
   }
   try {
     const response = await fetch(`http://127.0.0.1:${config.trustedPort}/health`, { signal: AbortSignal.timeout(2000) });

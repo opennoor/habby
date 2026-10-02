@@ -945,10 +945,9 @@ Direction: 'right'/'left'/'top'/'bottom' (or shorthand 'r'/'l'/'t'/'b')
 The active tab must be inside a SplitTabComponent, or be a terminal that can be wrapped.`,
             schema: z.object({
                 direction: z.enum(['horizontal', 'vertical', 'right', 'left', 'top', 'bottom', 'r', 'l', 't', 'b'])
-                    .describe('Split direction: right/left/top/bottom (or r/l/t/b), or horizontal/vertical'),
-                ratio: z.number().optional().describe('Split ratio (0.1 to 0.9, default: 0.5) - not yet implemented')
-            }),
-            handler: async (params: { direction: string; ratio?: number }) => {
+                    .describe('Split direction: right/left/top/bottom (or r/l/t/b), or horizontal/vertical')
+            }).strict(),
+            handler: async (params: { direction: string }) => {
                 const { direction } = params;
 
                 // Map direction to SplitDirection ('t', 'r', 'b', 'l')
