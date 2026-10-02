@@ -4,7 +4,7 @@ import { checkRequest } from '../request-context';
 import { createHash, randomUUID } from 'crypto';
 import { uniqueMatch } from '../runtime';
 import { Injectable, Inject, forwardRef } from '@angular/core';
-import { AppService, BaseTabComponent, ConfigService, SplitTabComponent, ProfilesService } from 'tabby-core';
+import { AppService, BaseTabComponent, ConfigService, SplitTabComponent, ProfilesService, TabsService } from 'tabby-core';
 import { BaseTerminalTabComponent } from 'tabby-terminal';
 import { z } from 'zod';
 import { BaseToolCategory } from './base-tool-category';
@@ -24,7 +24,8 @@ export class TabManagementToolCategory extends BaseToolCategory {
         logger: McpLoggerService,
         private config: ConfigService,
         private profilesService: ProfilesService,
-        @Inject(forwardRef(() => TerminalToolCategory)) private terminalTools: TerminalToolCategory
+        @Inject(forwardRef(() => TerminalToolCategory)) private terminalTools: TerminalToolCategory,
+        private tabFactory: TabsService
     ) {
         super(logger);
         this.initializeTools();
@@ -989,71 +990,44 @@ The active tab must be inside a SplitTabComponent, or be a terminal that can be 
                 }
 
                 try {
-                    // Check if we're inside a SplitTabComponent
-                    if (activeTab instanceof SplitTabComponent) {
-                        // Active tab IS a SplitTabComponent - split the focused pane
-                        const splitTab = activeTab as SplitTabComponent;
-                        const focusedPane = splitTab.getFocusedTab();
-
-                        if (focusedPane) {
-                            const newTab = await (splitTab as any).splitTab(focusedPane, splitDir);
-                            if (newTab) {
-                                this.logger.info(`Split pane ${splitDir} in SplitTabComponent`);
-                                return {
-                                    content: [{
-                                        type: 'text', text: JSON.stringify({
-                                            success: true,
-                                            direction: direction,
-                                            message: `Created split pane to the ${positionLabel}`,
-                                            paneCount: splitTab.getAllTabs().length
-                                        })
-                                    }]
-                                };
-                            }
+                    let splitTab: SplitTabComponent | null = activeTab instanceof SplitTabComponent
+                        ? activeTab : this.app.getParentTab(activeTab);
+                    const pane = activeTab instanceof SplitTabComponent ? activeTab.getFocusedTab() : activeTab;
+                    if (!(pane instanceof BaseTerminalTabComponent)) {
+                        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'UNSUPPORTED_SPLIT', message: 'Choose a terminal pane to split.' }) }] };
+                    }
+                    checkRequest();
+                    if (!splitTab) {
+                        const index = this.app.tabs.indexOf(activeTab);
+                        if (index < 0) throw new Error('Terminal tab is no longer open.');
+                        splitTab = this.tabFactory.create({ type: SplitTabComponent });
+                        // Keep the discovered owning tab ID when its terminal gains a wrapper.
+                        this.tabToId.set(splitTab, this.getOrCreateTabId(activeTab));
+                        try {
+                            this.app.removeTab(activeTab);
+                            this.app.addTabRaw(splitTab, index);
+                            await splitTab.addTab(pane, null, 'r');
+                            if (!splitTab.getAllTabs().includes(pane)) throw new Error('Could not attach terminal to split.');
+                            checkRequest();
+                        } catch (error) {
+                            if (splitTab.getAllTabs().includes(pane)) splitTab.removeTab(pane);
+                            pane.removeFromContainer(); pane.parent = null;
+                            this.app.removeTab(splitTab); splitTab.destroy();
+                            // Restore the original host registration without adding duplicate listeners.
+                            if (!this.app.tabs.includes(activeTab)) this.app.tabs.splice(index, 0, activeTab);
+                            this.app.selectTab(activeTab); this.app.emitTabsChanged();
+                            throw error;
                         }
                     }
-
-                    // Check if the parent is a SplitTabComponent
-                    const parent = this.app.getParentTab(activeTab);
-                    if (parent && parent instanceof SplitTabComponent) {
-                        const splitTab = parent as SplitTabComponent;
-                        const newTab = await (splitTab as any).splitTab(activeTab, splitDir);
-                        if (newTab) {
-                            this.logger.info(`Split tab ${splitDir} (parent is SplitTabComponent)`);
-                            return {
-                                content: [{
-                                    type: 'text', text: JSON.stringify({
-                                        success: true,
-                                        direction: direction,
-                                        message: `Created split pane to the ${positionLabel}`,
-                                        paneCount: splitTab.getAllTabs().length
-                                    })
-                                }]
-                            };
-                        }
+                    checkRequest();
+                    const created = await splitTab.splitTab(pane, splitDir);
+                    if (!created || !splitTab.getAllTabs().includes(created)) {
+                        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Could not create split pane' }) }] };
                     }
-
-                    // Current tab is not in a split - duplicate and explain
-                    // This is the fallback for tabs that are not yet in a SplitTabComponent
-                    const newTab = await this.app.duplicateTab(activeTab);
-                    if (newTab) {
-                        this.logger.info(`Created new tab (split not available for this tab type)`);
-                        return {
-                            content: [{
-                                type: 'text', text: JSON.stringify({
-                                    success: true,
-                                    direction: direction,
-                                    message: `Created new tab to the ${positionLabel} (split not available for this tab type)`,
-                                    note: 'Use terminal tabs for true split pane functionality',
-                                    fallback: true
-                                })
-                            }]
-                        };
-                    }
-
-                    return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Could not create split' }) }]
-                    };
+                    return { content: [{ type: 'text', text: JSON.stringify({
+                        success: true, direction, message: `Created split pane to the ${positionLabel}`,
+                        tabId: this.getOrCreateTabId(splitTab), paneCount: splitTab.getAllTabs().length,
+                    }) }] };
                 } catch (error: any) {
                     this.logger.error('Error splitting tab:', error);
                     return {

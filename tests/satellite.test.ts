@@ -284,7 +284,7 @@ function hostCategories() {
     const logger = { debug() {}, info() {}, warn() {}, error() {} };
     const app = { tabs: [] as any[] }, config = { store: {} }, profiles = { getProfiles: async () => [] };
     const terminal = new TerminalToolCategory(app, logger, config, {});
-    const tabs = new TabManagementToolCategory(app, logger, config, profiles, terminal);
+    const tabs = new TabManagementToolCategory(app, logger, config, profiles, terminal, { create: () => new Split() });
     const sftp = new SFTPToolCategory(app, config, logger, terminal, {});
     return { Terminal, SSH, Split, app, terminal, tabs, sftp };
 }
@@ -473,4 +473,104 @@ test('production SatelliteService rejects conflicting exact selectors before sel
         await service.run('exec_command', { command: 'true', tabId: 'tab-b', sessionId: 'pane-b' }, protocol.LOCAL_PRINCIPAL, signal);
         assert.equal(invoked[1].sessionId, 'pane-b');
     } finally { service.ngOnDestroy(); }
+});
+
+
+test('split wraps an unsplit terminal in place and keeps all four directions inside its owning tab', async () => {
+    for (const [direction, side] of [['right', 'r'], ['left', 'l'], ['top', 't'], ['bottom', 'b']] as const) {
+        const host = hostCategories(), original = new host.Terminal(), before = {}, after = {};
+        host.app.tabs = [before, original, after];
+        const app = host.app as any; app.activeTab = original; app.getParentTab = () => null;
+        app.duplicateTab = () => { throw new Error('Top-level duplication must never be used for splitting.'); };
+        app.removeTab = (tab: any) => { app.tabs = app.tabs.filter((item: any) => item !== tab); };
+        app.addTabRaw = (tab: any, index: number) => { app.tabs.splice(index, 0, tab); app.activeTab = tab; };
+        const calls: any[] = [];
+        (host.Split.prototype as any).addTab = async function (tab: any, relative: any, side: string) {
+            calls.push(['add', tab, relative, side]); this.panes.push(tab); this.focused = tab;
+        };
+        (host.Split.prototype as any).splitTab = async function (tab: any, side: string) {
+            calls.push(['split', tab, side]); const pane = new host.Terminal(); this.panes.push(pane); return pane;
+        };
+        const id = host.tabs.getOrCreateTabId(original);
+        const tool = host.tabs.mcpTools.find((tool: any) => tool.name === 'split_tab');
+        const result = JSON.parse((await tool.handler({ direction })).content[0].text);
+        assert.equal(result.success, true); assert.equal(result.tabId, id); assert.equal(result.paneCount, 2);
+        assert.equal(app.tabs.length, 3); assert.equal(app.tabs[0], before); assert.equal(app.tabs[2], after);
+        assert.ok(app.tabs[1] instanceof host.Split); assert.equal(host.tabs.findTabByLocator({ tabId: id }), app.tabs[1]);
+        assert.equal(app.tabs[1].panes[0], original); assert.equal(calls[1][1], original); assert.equal(calls[1][2], side);
+        const sessions = host.terminal.findTerminalSessions();
+        assert.equal(sessions.length, 2); assert.ok(sessions.every((session: any) => session.tabParent === app.tabs[1] && session.isSplit));
+    }
+});
+
+test('existing split roots and child targets split directly; unsupported and refused splits never duplicate', async () => {
+    for (const childTarget of [false, true]) {
+        const host = hostCategories(), pane = new host.Terminal(), wrapper = new host.Split();
+        wrapper.panes = [pane]; wrapper.focused = pane; host.app.tabs = [wrapper];
+        const app = host.app as any; app.activeTab = childTarget ? pane : wrapper; app.getParentTab = () => wrapper;
+        let duplicates = 0, calls = 0;
+        app.duplicateTab = () => { duplicates++; throw new Error('Unexpected duplication'); };
+        const tool = host.tabs.mcpTools.find((tool: any) => tool.name === 'split_tab');
+        (wrapper as any).splitTab = async (target: any, side: string) => {
+            calls++; assert.equal(target, pane); assert.equal(side, 'l'); const next = new host.Terminal(); wrapper.panes.push(next); return next;
+        };
+        assert.equal(JSON.parse((await tool.handler({ direction: 'left' })).content[0].text).success, true);
+        for (const refusal of [null, new Error('host refused'), new host.Terminal()]) {
+            (wrapper as any).splitTab = async () => { calls++; if (refusal instanceof Error) throw refusal; return refusal; };
+            assert.equal(JSON.parse((await tool.handler({ direction: 'right' })).content[0].text).success, false);
+        }
+        assert.equal(calls, 4); assert.equal(duplicates, 0); assert.deepEqual(app.tabs, [wrapper]);
+        app.activeTab = {}; app.getParentTab = () => null;
+        assert.equal(JSON.parse((await tool.handler({ direction: 'bottom' })).content[0].text).error, 'UNSUPPORTED_SPLIT');
+        wrapper.focused = undefined; app.activeTab = wrapper;
+        assert.equal(JSON.parse((await tool.handler({ direction: 'top' })).content[0].text).error, 'UNSUPPORTED_SPLIT');
+        assert.equal(calls, 4); assert.equal(duplicates, 0);
+    }
+});
+
+
+test('split factory and host failures retain the original terminal without top-level duplication', async () => {
+    for (const failure of ['factory', 'refused', 'exception']) {
+        const host = hostCategories(), original = new host.Terminal(); host.app.tabs = [original];
+        const app = host.app as any; app.activeTab = original; app.getParentTab = () => null;
+        app.duplicateTab = () => { throw new Error('Unexpected duplication'); };
+        app.removeTab = (tab: any) => { app.tabs = app.tabs.filter((item: any) => item !== tab); };
+        app.addTabRaw = (tab: any, index: number) => { app.tabs.splice(index, 0, tab); app.activeTab = tab; };
+        if (failure === 'factory') (host.tabs as any).tabFactory.create = () => { throw new Error('factory unavailable'); };
+        (host.Split.prototype as any).addTab = async function (tab: any) { this.panes.push(tab); this.focused = tab; };
+        (host.Split.prototype as any).splitTab = async () => { if (failure === 'exception') throw new Error('host failed'); return null; };
+        const id = host.tabs.getOrCreateTabId(original);
+        const result = JSON.parse((await host.tabs.mcpTools.find((tool: any) => tool.name === 'split_tab').handler({ direction: 'right' })).content[0].text);
+        assert.equal(result.success, false); assert.equal(app.tabs.length, 1);
+        assert.equal(host.tabs.findTabByLocator({ tabId: id }), app.tabs[0]);
+        if (failure === 'factory') assert.equal(app.tabs[0], original);
+        else assert.deepEqual(app.tabs[0].getAllTabs(), [original]);
+    }
+});
+
+test('failed wrapper attachment restores the original session, tab ID and position without destroying it', async () => {
+    for (const failure of ['before-attach', 'after-attach', 'refused']) {
+        const host = hostCategories(), original = new host.Terminal(), before = {}, after = {};
+        host.app.tabs = [before, original, after];
+        const app = host.app as any; app.activeTab = original; app.getParentTab = () => null;
+        app.removeTab = (tab: any) => { app.tabs = app.tabs.filter((item: any) => item !== tab); };
+        app.addTabRaw = (tab: any, index: number) => { app.tabs.splice(index, 0, tab); app.activeTab = tab; };
+        let changed = 0, destroyedWrappers = 0;
+        app.selectTab = (tab: any) => { app.activeTab = tab; }; app.emitTabsChanged = () => changed++;
+        (original as any).destroy = () => { throw new Error('Original terminal must survive.'); };
+        (original as any).removeFromContainer = () => {};
+        (host.Split.prototype as any).addTab = async function (tab: any) {
+            if (failure === 'after-attach') { this.panes.push(tab); tab.parent = this; }
+            if (failure !== 'refused') throw new Error('attachment failed');
+        };
+        (host.Split.prototype as any).removeTab = function (tab: any) { this.panes = this.panes.filter((item: any) => item !== tab); };
+        (host.Split.prototype as any).destroy = function () { assert.equal(this.panes.length, 0); destroyedWrappers++; };
+        (host.Split.prototype as any).splitTab = () => { throw new Error('Split must not run after attachment failure.'); };
+        const tabId = host.tabs.getOrCreateTabId(original), sessionId = host.terminal.getOrCreateSessionId(original);
+        const result = JSON.parse((await host.tabs.mcpTools.find((tool: any) => tool.name === 'split_tab').handler({ direction: 'right' })).content[0].text);
+        assert.equal(result.success, false); assert.deepEqual(app.tabs, [before, original, after]);
+        assert.equal(app.activeTab, original); assert.equal(host.tabs.findTabByLocator({ tabId }), original);
+        assert.equal(host.terminal.findSessionByLocator({ sessionId }).tab, original);
+        assert.equal((original as any).parent, null); assert.equal(changed, 1); assert.equal(destroyedWrappers, 1);
+    }
 });

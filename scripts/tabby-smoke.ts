@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { WebSocket } from 'ws';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startHub } from '../packages/hub/src/hub.js';
-import { LOCAL_PRINCIPAL } from '../shared/protocol.js';
+import { LOCAL_PRINCIPAL, parseGlobalId } from '../shared/protocol.js';
 
 if (process.platform !== 'linux') throw new Error('This acceptance check requires Linux, Tabby and xvfb-run.');
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -125,16 +125,53 @@ try {
     const streamed = await tool('read_terminal_output', { sessionId: opened.sessionId, cursor: output.cursor });
     assert.match(Buffer.from(streamed.data, 'base64').toString(), new RegExp(`TABBY_HUB_WINDOW_${index}`));
   }
-  await tool('split_tab', { sessionId: sessions[1], direction: 'right' });
-  const panes = await waitFor(async () => {
-    const result = await tool('get_session_list', { windowId: windows[1].windowId }); return result.length === 2 ? result : undefined;
-  }, 'split panes');
-  for (const [index, pane] of panes.entries()) await execute(pane.sessionId, `TABBY_HUB_PANE_${index}`);
-  await firstWindow("setTimeout(()=>require('@electron/remote').getCurrentWindow().destroy(),50);true");
-  await waitFor(() => online().length === 1, 'first window disconnection');
-  await execute(panes[1].sessionId, 'TABBY_HUB_SURVIVES');
   const secondTarget = (await targets()).find(item => item.type === 'page' && item.id !== target.id); assert(secondTarget);
   const secondWindow = await debuggerCall(secondTarget.webSocketDebuggerUrl);
+  // Some Tabby builds wrap profile tabs by default. Expose the existing terminal as
+  // a raw top-level tab so acceptance must exercise the plugin's unsplit wrap path.
+  const rawTerminal = await secondWindow(`(() => {
+    const Module = require(${JSON.stringify(plugin)}).default;
+    const Provider = Module.ɵinj.providers.find(provider => provider.prototype?.capabilities && provider.prototype?.snapshot);
+    const service = require('@angular/core').getDebugNode(document.querySelector('app-root')).injector.get(Provider);
+    const session = service.terminal.findSessionByLocator({ sessionId: ${JSON.stringify(parseGlobalId(sessions[1]).localId)} });
+    if (!session) throw new Error('Original terminal missing.');
+    if (session.isSplit) {
+      const parent = session.tabParent;
+      if (parent.getAllTabs().length !== 1) throw new Error('Expected a single initial pane.');
+      const index = service.app.tabs.indexOf(parent);
+      const tabId = service.tabs.getOrCreateTabId(parent);
+      parent.removeTab(session.tab);
+      service.app.removeTab(parent);
+      service.tabs.tabToId.set(session.tab, tabId);
+      service.app.addTabRaw(session.tab, index);
+    }
+    void service.client.snapshot();
+    return service.terminal.findSessionByLocator({ sessionId: session.sessionId }).isSplit === false;
+  })()`);
+  assert.equal(rawTerminal, true, 'Fixture must expose an unsplit terminal before wrapping.');
+  await waitFor(async () => (await tool('get_session_list', { windowId: windows[1].windowId }))
+    .find((session: any) => session.sessionId === sessions[1])?.isSplit === false, 'unsplit original terminal');
+  const topology = async () => (await tool('list_windows', {})).windows.find((window: any) => window.windowId === windows[1].windowId);
+  const beforeSplit = await topology();
+  const owningTabId = beforeSplit.sessions.find((session: any) => session.sessionId === sessions[1] || session.id === sessions[1])?.tabId;
+  assert.ok(owningTabId, 'Original session must have a discovered owning tab.');
+  let panes: any[] = [];
+  for (const [index, direction] of ['right', 'left', 'top', 'bottom'].entries()) {
+    await tool('split_tab', { sessionId: sessions[1], direction });
+    panes = await waitFor(async () => {
+      const window = await topology();
+      assert.equal(window.tabs.length, beforeSplit.tabs.length, 'Splitting must not create a top-level tab.');
+      const sameTab = window.sessions.filter((session: any) => session.tabId === owningTabId);
+      if (sameTab.length !== index + 2) return undefined;
+      const listed = await tool('get_session_list', { windowId: windows[1].windowId });
+      const matched = listed.filter((session: any) => sameTab.some((pane: any) => pane.id === session.sessionId));
+      return matched.length === index + 2 && matched.every((session: any) => session.isSplit && session.totalPanes === index + 2) ? sameTab : undefined;
+    }, `same-tab ${direction} split panes`);
+  }
+  for (const [index, pane] of panes.entries()) await execute(pane.id, `TABBY_HUB_PANE_${index}`);
+  await firstWindow("setTimeout(()=>require('@electron/remote').getCurrentWindow().destroy(),50);true");
+  await waitFor(() => online().length === 1, 'first window disconnection');
+  await execute(panes[1].id, 'TABBY_HUB_SURVIVES');
   await secondWindow("setTimeout(()=>require('@electron/remote').getCurrentWindow().destroy(),50);true");
   await waitFor(() => online().length === 0, 'all windows disconnected');
   assert.equal((await client.listTools()).tools.length, 38);
