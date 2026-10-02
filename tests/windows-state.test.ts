@@ -20,7 +20,15 @@ test('native Windows state replaces unsafe explicit ACLs before writing secrets'
     @{sid=$id.User.Value; admin=$principal.IsInRole([System.Security.Principal.WindowsBuiltinRole]::Administrator)} | ConvertTo-Json -Compress`);
   if (process.env.TABBY_HUB_REQUIRE_STANDARD_USER === '1') assert.equal(identity.admin, false, 'Native acceptance must run with a standard user token.');
   const state = await initializeState(stateDir);
-  (await openStore(stateDir)).close();
+  const freshChecks = await doctor({ ...state.config, trustedPort: 1 });
+  for (const name of ['state-directory', 'config.json', 'satellite.json', 'secrets.json'])
+    assert.equal(freshChecks.find(check => check.name === name)?.ok, true, `${name}: fresh state must already be private before opening storage`);
+  const freshStore = await openStore(stateDir);
+  try {
+    const storageChecks = await doctor({ ...state.config, trustedPort: 1 });
+    for (const name of ['auth.sqlite', 'auth.sqlite-wal', 'auth.sqlite-shm'])
+      assert.equal(storageChecks.find(check => check.name === name)?.ok, true, `${name}: fresh live database files must be private`);
+  } finally { freshStore.close(); }
   const original = await readFile(join(stateDir, 'secrets.json'), 'utf8');
   await execute('icacls.exe', [stateDir, '/grant', '*S-1-1-0:(OI)(CI)R']);
   const files = ['config.json', 'satellite.json', 'secrets.json', 'auth.sqlite', 'installation.json', 'task.xml', 'hub.stderr.log'];
@@ -40,7 +48,12 @@ test('native Windows state replaces unsafe explicit ACLs before writing secrets'
     exec: async () => {
       registrationObserved = true;
       const controlChecks = await doctor({ ...state.config, trustedPort: 1 });
-      for (const name of ['state-directory', ...files]) assert.equal(controlChecks.find(check => check.name === name)?.ok, true, `${name}: private before task registration`);
+      for (const name of ['state-directory', ...files]) {
+        const ok = controlChecks.find(check => check.name === name)?.ok;
+        const descriptor = ok ? '' : await powershell(`$file=Join-Path $env:TABBY_HUB_PRIVATE_STATE_DIR '${name === 'state-directory' ? '' : name}';
+          ConvertTo-Json -Compress -InputObject (Get-Acl -LiteralPath $file).Sddl`);
+        assert.equal(ok, true, `${name}: private before task registration; ${descriptor}`);
+      }
       assert.match(await readFile(join(stateDir, 'task.xml'), 'utf16le'), /<Task version=/);
       assert.ok(JSON.parse(await readFile(join(stateDir, 'installation.json'), 'utf8')).pluginDir);
     } });

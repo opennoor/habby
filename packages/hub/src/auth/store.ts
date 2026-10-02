@@ -129,6 +129,10 @@ export async function openStore(stateDir: string) {
   // Create with private permissions before SQLite can open WAL/journal files.
   try { await writeFile(path, '', { flag: 'wx', mode: 0o600 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   const store = new AuthStore(new DatabaseSync(path));
-  if (process.platform !== 'win32') await chmod(path, 0o600);
+  try {
+    // SQLite creates WAL/SHM files itself; their default owner also needs explicit repair.
+    if (process.platform === 'win32') await privateDirectory(stateDir);
+    else await chmod(path, 0o600);
+  } catch (error) { store.close(); throw error; }
   return store;
 }

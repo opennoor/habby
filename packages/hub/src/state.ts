@@ -18,6 +18,14 @@ export const PRIVATE_STATE_FILES = [
   { name: 'config.json' }, { name: 'satellite.json' }, { name: 'secrets.json' },
   ...['auth.sqlite', 'auth.sqlite-wal', 'auth.sqlite-shm', 'installation.json', 'task.xml', 'hub.stderr.log'].map(name => ({ name, optional: true })),
 ];
+const windowsPrivateFileAcl = `
+  $item=Get-Item -Force -LiteralPath $file
+  if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'State files must be regular files, not links.' }
+  $fileAcl=New-Object System.Security.AccessControl.FileSecurity
+  $fileAcl.SetOwner($sid)
+  $fileAcl.SetAccessRuleProtection($true,$false)
+  $fileAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow')))
+  [IO.File]::SetAccessControl($file,$fileAcl)`;
 
 export async function privateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
@@ -45,13 +53,7 @@ export async function privateDirectory(path: string): Promise<void> {
       foreach($name in (ConvertFrom-Json $env:TABBY_HUB_PRIVATE_STATE_FILES)) {
         $file=Join-Path $env:TABBY_HUB_PRIVATE_STATE_DIR $name
         if(Test-Path -LiteralPath $file) {
-          $item=Get-Item -Force -LiteralPath $file
-          if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'State files must be regular files, not links.' }
-          $fileAcl=New-Object System.Security.AccessControl.FileSecurity
-          $fileAcl.SetOwner($sid)
-          $fileAcl.SetAccessRuleProtection($true,$false)
-          $fileAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow')))
-          [IO.File]::SetAccessControl($file,$fileAcl)
+          ${windowsPrivateFileAcl}
         }
       }`;
     await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
@@ -59,11 +61,22 @@ export async function privateDirectory(path: string): Promise<void> {
         TABBY_HUB_PRIVATE_STATE_FILES: JSON.stringify(PRIVATE_STATE_FILES.map(file => file.name)) } });
   } else await chmod(path, 0o700);
 }
+async function securePrivateFile(path: string): Promise<void> {
+  if (process.platform === 'win32') {
+    // The token's default owner can be Administrators even inside a user-owned directory.
+    const script = `$ErrorActionPreference='Stop'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
+      $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+      $file=$env:TABBY_HUB_PRIVATE_STATE_FILE
+      ${windowsPrivateFileAcl}`;
+    await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { windowsHide: true, timeout: 30000, env: { ...process.env, TABBY_HUB_PRIVATE_STATE_FILE: path } });
+  } else await chmod(path, 0o600);
+}
 export async function writePrivateFile(path: string, content: string | Buffer): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, content, { mode: 0o600, flag: 'wx' });
-    if (process.platform !== 'win32') await chmod(temporary, 0o600);
+    await securePrivateFile(temporary);
     await rename(temporary, path);
   } finally { await rm(temporary, { force: true }); }
 }
@@ -126,7 +139,7 @@ export async function initializeState(stateDir = defaultStateDir(), overrides: P
       credential: randomBytes(32).toString('base64url'), adminCredential: randomBytes(32).toString('base64url') };
     const temporary = `${secretsPath}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(secrets), { mode: 0o600, flag: 'wx' });
-    try { await link(temporary, secretsPath); }
+    try { await securePrivateFile(temporary); await link(temporary, secretsPath); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       secrets = JSON.parse(await readFile(secretsPath, 'utf8'));
