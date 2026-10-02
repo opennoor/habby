@@ -34,6 +34,16 @@ async function main(): Promise<void> {
     const config = await readConfig(stateDir);
     print(await uninstallHub(config, { pluginDir: values['plugin-dir'], purge: values.purge })); return;
   }
+  if (command === 'doctor') {
+    try {
+      const checks = await doctor(await readConfig(stateDir));
+      print(checks); if (checks.some(check => !check.ok)) process.exitCode = 1;
+    } catch (error) {
+      print([{ name: 'config.json', ok: false, detail: error instanceof Error ? error.message : String(error) }]);
+      process.exitCode = 1;
+    }
+    return;
+  }
   const overrides: Partial<HubConfig> = {};
   for (const [flag, key] of [['trusted-port', 'trustedPort'], ['satellite-port', 'satellitePort'], ['public-port', 'publicPort']] as const)
     if (values[flag]) overrides[key] = Number(values[flag]);
@@ -53,9 +63,7 @@ async function main(): Promise<void> {
     print(await installHub({ config, pluginDir: values['plugin-dir'], start: !values['no-start'], entrypoint }));
     process.stdout.write(`Restart Tabby windows to load the satellite. MCP: http://127.0.0.1:${config.trustedPort}/mcp\n`);
   } else if (command === 'status') print(await adminRequest(config, '/admin/status', 'GET'));
-  else if (command === 'doctor') {
-    const checks = await doctor(config); print(checks); if (checks.some(check => !check.ok)) process.exitCode = 1;
-  } else if (command === 'enroll') print(await adminRequest(config, '/admin/enroll', 'POST'));
+  else if (command === 'enroll') print(await adminRequest(config, '/admin/enroll', 'POST'));
   else if (command === 'client') {
     if (!values.name || !values.redirect?.length) throw new Error('client needs --name and at least one --redirect.');
     const { registerPublicClient } = await import('./auth.js');

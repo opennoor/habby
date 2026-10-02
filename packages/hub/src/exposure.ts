@@ -12,7 +12,7 @@ export async function tailscaleIdentity(run: Execute = execute): Promise<Tailnet
   const dnsName = String(status.Self.DNSName ?? '').replace(/\.$/, '');
   const ips: string[] = status.TailscaleIPs ?? status.Self.TailscaleIPs ?? [];
   if (!dnsName || !ips.length || !ips.every(ip => /^[a-fA-F0-9:.]+$/.test(ip))) throw new Error('Tailscale did not provide a valid host identity.');
-  return { hosts: [dnsName, dnsName.split('.')[0], ...ips], dnsName, ip: ips.find(ip => !ip.includes(':')) ?? ips[0] };
+  return { hosts: [dnsName, dnsName.split('.')[0], ...ips.map(ip => ip.includes(':') ? `[${ip}]` : ip)], dnsName, ip: ips.find(ip => !ip.includes(':')) ?? ips[0] };
 }
 export async function exposeTailnet(config: HubConfig, run: Execute = execute): Promise<TailnetIdentity> {
   const identity = await tailscaleIdentity(run);

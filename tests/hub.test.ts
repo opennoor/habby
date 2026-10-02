@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
+import { request } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
@@ -13,6 +14,7 @@ import { initializeState } from '../packages/hub/src/state.js';
 import { TOOLS } from '../shared/catalog.js';
 import { globalId, LOCAL_PRINCIPAL, type HubConfig, type SatelliteTrust } from '../shared/protocol.js';
 import { SatelliteClient } from '../packages/satellite/src/client.ts';
+import { tailscaleIdentity } from '../packages/hub/src/exposure.js';
 
 async function freePort(): Promise<number> {
   const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -76,6 +78,22 @@ test('satellite upgrade and browser origins reject unauthorized callers', async 
   const response = await fetch(`http://127.0.0.1:${config.trustedPort}/mcp`, { headers: { Origin: 'https://attacker.example' } });
   assert.equal(response.status, 403);
   assert.equal((await fetch(`http://127.0.0.1:${config.trustedPort}/health`)).status, 200);
+});
+
+test('Tailnet IPv6 Host and Origin forms pass trusted request checks', async t => {
+  const config = await temporaryConfig();
+  const identity = await tailscaleIdentity(async () => JSON.stringify({ BackendState: 'Running', Self: { Online: true, DNSName: 'host.tailnet.ts.net.' }, TailscaleIPs: ['fd7a::1'] }));
+  config.trustedHosts = identity.hosts;
+  const hub = await startHub(config);
+  t.after(async () => { await hub.close(); await rm(config.stateDir, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${config.trustedPort}/health`;
+  const headers = { Host: `[fd7a::1]:${config.trustedPort}`, Origin: `http://[fd7a::1]:${config.trustedPort}` };
+  const status = (headers: Record<string, string>) => new Promise<number | undefined>((resolve, reject) => {
+    request(base, { headers }, response => { response.resume(); response.on('end', () => resolve(response.statusCode)); }).on('error', reject).end();
+  });
+  assert.equal(await status(headers), 200);
+  assert.equal(await status({ ...headers, Host: `[fd7a::2]:${config.trustedPort}` }), 403);
+  assert.equal(await status({ ...headers, Origin: `http://[fd7a::2]:${config.trustedPort}` }), 403);
 });
 
 test('initialization keeps private trust identity stable across concurrent callers', async t => {

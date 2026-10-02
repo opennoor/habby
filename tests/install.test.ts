@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, stat, access, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, stat, access, rm, readdir, chmod } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
@@ -78,4 +81,61 @@ test('doctor rejects an unrelated HTTP200 process occupying the configured port'
       assert.equal((await doctor(config)).find(check => check.name === 'runtime')!.ok, supported, version);
     }
   } finally { Object.defineProperty(process.versions, 'node', descriptor); }
+});
+
+test('CLI doctor reports missing, malformed and unsafe state without initializing or repairing files', async t => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-doctor-readonly-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const stateDir = path.join(tmp, 'state');
+  const run = async () => {
+    try {
+      await promisify(execFile)(process.execPath, ['--import', 'tsx', fileURLToPath(new URL('../packages/hub/src/cli.ts', import.meta.url)), 'doctor', '--state-dir', stateDir]);
+      assert.fail('Unhealthy state must fail diagnosis.');
+    } catch (error) {
+      const result = error as any; assert.equal(result.code, 1); return JSON.parse(result.stdout);
+    }
+  };
+  assert.equal((await run())[0].ok, false);
+  await assert.rejects(access(stateDir));
+  await mkdir(stateDir);
+  await writeFile(path.join(stateDir, 'config.json'), 'malformed');
+  assert.equal((await run())[0].ok, false);
+  assert.equal(await readFile(path.join(stateDir, 'config.json'), 'utf8'), 'malformed');
+  const original = JSON.stringify({ stateDir, trustedPort: 65535, satellitePort: 65534, publicPort: 65533 });
+  await writeFile(path.join(stateDir, 'config.json'), original);
+  if (process.platform !== 'win32') await chmod(path.join(stateDir, 'config.json'), 0o644);
+  const checks = await run();
+  assert.equal(checks.find((check: any) => check.name === 'satellite.json').ok, false);
+  if (process.platform !== 'win32') {
+    assert.equal(checks.find((check: any) => check.name === 'config.json').ok, false);
+    assert.equal((await stat(path.join(stateDir, 'config.json'))).mode & 0o777, 0o644);
+  }
+  assert.equal(await readFile(path.join(stateDir, 'config.json'), 'utf8'), original);
+  assert.deepEqual(await readdir(stateDir), ['config.json']);
+});
+
+test('Windows installer selects supported architectures and rejects unsupported ones before installation', async t => {
+  const execute = promisify(execFile);
+  try { await execute('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']); }
+  catch { t.skip('PowerShell runtime unavailable on this host'); return; }
+  const source = await readFile(new URL('../scripts/install.ps1', import.meta.url), 'utf8');
+  const command = `
+    $ErrorActionPreference = 'Stop'
+    $source = [Console]::In.ReadToEnd()
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
+    $selection = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
+    $select = [scriptblock]::Create($selection.Extent.Text)
+    foreach ($architecture in @('X64', 'Arm64')) {
+      if ((& $select) -cne $architecture.ToLowerInvariant()) { throw "Wrong bundle for $architecture" }
+    }
+    foreach ($architecture in @('X86', 'Arm', 'Wasm', 'S390x')) {
+      try { & $select; throw 'Unsupported architecture was accepted.' }
+      catch { if ($_.Exception.Message -ne "Unsupported Windows architecture: $architecture") { throw } }
+    }
+    exit 0
+  `;
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile('pwsh', ['-NoLogo', '-NoProfile', '-Command', command], error => error ? reject(error) : resolve());
+    child.stdin!.end(source);
+  });
 });

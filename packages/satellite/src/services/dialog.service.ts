@@ -193,7 +193,13 @@ export class DialogService implements OnDestroy {
             const autoRejectTimer = setTimeout(() => finish(false), this.AUTO_REJECT_MS);
 
             const onKeyDown = (event: KeyboardEvent) => {
-                if (event.key === 'Escape') {
+                if (event.key === 'Tab') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (document.activeElement === rejectBtn) approveBtn.focus();
+                    else if (document.activeElement === approveBtn) rejectBtn.focus();
+                    else (event.shiftKey ? approveBtn : rejectBtn).focus();
+                } else if (event.key === 'Escape') {
                     event.preventDefault();
                     event.stopPropagation();
                     finish(false);

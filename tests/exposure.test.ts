@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { exposeTailnet, funnelMappings } from '../packages/hub/src/exposure.js';
+import { exposeTailnet, funnelMappings, tailscaleIdentity } from '../packages/hub/src/exposure.js';
 const config = { stateDir: '/tmp/unused', trustedPort: 3001, satellitePort: 3002, publicPort: 3003, publicUrl: 'https://host.tailnet.ts.net/tabby/mcp' };
 const identity = { hosts: ['host.tailnet.ts.net'], dnsName: 'host.tailnet.ts.net', ip: '100.64.1.2' };
 test('Funnel maps public listener and prefixed origin metadata; private Serve routes are preserved', () => {
@@ -21,4 +21,11 @@ test('direct Tailnet forwards only trusted agent port and rejects conflicting se
   await exposeTailnet(config, execute);
   assert.deepEqual(commands.at(-1), ['serve', '--bg', '--tcp=3001', 'tcp://127.0.0.1:3001']);
   await assert.rejects(exposeTailnet(config, async args => args[0] === 'status' ? await execute(args) : JSON.stringify({ TCP: { 3001: { TCPForward: '127.0.0.1:9999' } } })), /another service/);
+});
+test('Tailnet identities match URL hostname forms while keeping endpoint IPs raw', async () => {
+  for (const ips of [['fd7a::1'], ['100.64.1.2', 'fd7a::1']]) {
+    const identity = await tailscaleIdentity(async () => JSON.stringify({ BackendState: 'Running', Self: { Online: true, DNSName: 'host.tailnet.ts.net.' }, TailscaleIPs: ips }));
+    for (const ip of ips) assert.ok(identity.hosts.includes(new URL(`http://${ip.includes(':') ? `[${ip}]` : ip}:3001/mcp`).hostname));
+    assert.equal(identity.ip, ips[0]);
+  }
 });

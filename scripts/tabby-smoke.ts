@@ -75,6 +75,30 @@ try {
   const firstWindow = await debuggerCall(target.webSocketDebuggerUrl);
   const online = () => (hub.registry.list(LOCAL_PRINCIPAL) as any[]).filter(window => window.online);
   await waitFor(() => online().length === 1, 'first satellite');
+  const focusSequence = await firstWindow(`(() => {
+    const module = require(${JSON.stringify(plugin)}).default;
+    const Dialog = module.ɵinj.providers.find(provider => provider.prototype?.showOperationConfirmation);
+    const service = new Dialog({ info(){}, warn(){}, error(){} }, { t: key => key }, {}, {});
+    service.requestOsAttention = service.clearOsAttention = () => {};
+    const outside = document.createElement('button'); outside.id = 'modal-focus-test'; document.body.append(outside); outside.focus();
+    service.showDialog('Focus test', 'test', 'test');
+    const sequence = [document.activeElement.className];
+    for (const shiftKey of [false, false, true, true]) {
+      const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+      document.activeElement.dispatchEvent(event);
+      if (!event.defaultPrevented) throw new Error('Dialog Tab was not trapped.');
+      sequence.push(document.activeElement.className);
+    }
+    outside.focus();
+    outside.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    sequence.push(document.activeElement.className);
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    if (document.querySelector('.mcp-dialog-overlay')) throw new Error('Escape did not close the dialog.');
+    return sequence;
+  })()`);
+  assert.deepEqual(focusSequence, ['reject', 'approve', 'reject', 'approve', 'reject', 'approve'].map(action => `mcp-dialog-btn mcp-dialog-btn-${action}`));
+  await waitFor(() => firstWindow("document.activeElement.id === 'modal-focus-test'"), 'dialog focus restoration');
+  await firstWindow("document.getElementById('modal-focus-test').remove();true");
   await firstWindow("require('electron').ipcRenderer.send('app:new-window')");
   await waitFor(() => online().length === 2, 'second satellite');
   client = new Client({ name: 'real-Tabby-smoke', version: '1' });
@@ -114,7 +138,7 @@ try {
   await secondWindow("setTimeout(()=>require('@electron/remote').getCurrentWindow().destroy(),50);true");
   await waitFor(() => online().length === 0, 'all windows disconnected');
   assert.equal((await client.listTools()).tools.length, 38);
-  console.log('PASS: two real Tabby windows, new tabs, split panes, shell execution, output streaming, and Hub survival.');
+  console.log('PASS: modal keyboard focus, two real Tabby windows, new tabs, split panes, shell execution, output streaming, and Hub survival.');
 } catch (error) { console.error(stderr); throw error; }
 finally {
   await client?.close(); for (const socket of sockets) socket.close();

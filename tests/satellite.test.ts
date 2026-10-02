@@ -64,6 +64,21 @@ test('long polls wake on output and cancel when disconnected', async () => {
     await assert.rejects(cancelled, /cancelled/);
     ring.dispose();
 });
+test('closing a terminal wakes its readers and preserves unrelated long polls', async () => {
+    const ring = new OutputRings();
+    try {
+        const first = await ring.read('one'), second = await ring.read('two');
+        let unrelatedSettled = false;
+        const unrelated = ring.read('two', second.cursor, 65536, 25000).then(result => { unrelatedSettled = true; return result; });
+        const closing = ring.read('one', first.cursor, 65536, 25000);
+        ring.close('one');
+        await assert.rejects(timeout(closing), /Terminal session closed/);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(unrelatedSettled, false);
+        ring.append('two', 'still waiting');
+        assert.equal((await timeout(unrelated)).bytes, 13);
+    } finally { ring.dispose(); }
+});
 test('total output eviction wakes live session polls with a gap and a fresh cursor', async () => {
     const ring = new OutputRings(8, 8);
     try {

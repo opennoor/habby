@@ -1,6 +1,11 @@
 param([Parameter(Mandatory=$true)][ValidatePattern('^[0-9A-Za-z._-]+$')][string]$Version, [string]$ArchiveDir, [string]$PluginDir)
 $ErrorActionPreference = 'Stop'
-$arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
+$architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+$arch = switch ($architecture) {
+  'X64' { 'x64' }
+  'Arm64' { 'arm64' }
+  default { throw "Unsupported Windows architecture: $_" }
+}
 $name = "tabby-hub-$Version-win-$arch"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $tmp | Out-Null

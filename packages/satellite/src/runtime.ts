@@ -119,6 +119,6 @@ export class OutputRings {
         if (signal?.aborted) throw new HubError('CANCELLED', 'Output read cancelled.');
         return result;
     }
-    close(id: string) { this.rings.delete(id); for (const wake of [...this.waiters.keys()]) wake(); }
+    close(id: string) { this.rings.delete(id); for (const [wake, target] of [...this.waiters]) if (target === id) wake(); }
     dispose() { this.rings.clear(); for (const wake of [...this.waiters.keys()]) wake(); }
 }
