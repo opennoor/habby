@@ -7,6 +7,7 @@ $testRoot = Join-Path $env:PUBLIC 'tabby-hub-ci-tests'
 $manifestPath = Join-Path $testRoot 'probe.json'
 $projectRoot = Split-Path $PSScriptRoot
 $node = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
+$powershell = (Get-Command powershell.exe -CommandType Application | Select-Object -First 1).Source
 New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
 New-LocalUser -Name $user -Password $secure | Out-Null
 function Invoke-StandardUser($account, $executable, $arguments, $logPrefix) {
@@ -49,14 +50,17 @@ foreach($file in @($manifest.file,$manifest.database)) {
 Write-Output 'PASS: second standard user cannot read secrets or authentication database by full path.'
 exit 0
 '@
-  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
-  Invoke-StandardUser $otherUser 'powershell.exe' "-NoProfile -NonInteractive -EncodedCommand $encoded" 'reader'
+  # Credentialed process creation limits the command line to 1024 characters.
+  $probePath = Join-Path $testRoot 'reader.ps1'
+  Set-Content -LiteralPath $probePath -Value $probe -Encoding UTF8
+  Invoke-StandardUser $otherUser $powershell "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$probePath`"" 'reader'
 } finally {
   try {
     if (Test-Path -LiteralPath $manifestPath) {
       $cleanup = '$ErrorActionPreference="Stop"; $manifest=Get-Content -Raw -LiteralPath $env:TABBY_HUB_ACL_PROBE_MANIFEST | ConvertFrom-Json; Remove-Item -LiteralPath $manifest.stateDir -Recurse -Force'
-      $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cleanup))
-      Invoke-StandardUser $user 'powershell.exe' "-NoProfile -NonInteractive -EncodedCommand $encoded" 'cleanup'
+      $cleanupPath = Join-Path $testRoot 'cleanup.ps1'
+      Set-Content -LiteralPath $cleanupPath -Value $cleanup -Encoding UTF8
+      Invoke-StandardUser $user $powershell "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cleanupPath`"" 'cleanup'
     }
   } finally {
     Remove-LocalUser -Name $otherUser -ErrorAction SilentlyContinue
