@@ -435,7 +435,7 @@ test('lost first registration acknowledgement reconnects without surrendering wi
     }
 });
 
-test('production SatelliteService rejects conflicting exact selectors before selecting or invoking', async () => {
+function loadSatelliteService() {
     const source = readFileSync(new URL('../packages/satellite/src/satellite.service.ts', import.meta.url), 'utf8');
     const output = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
         experimentalDecorators: true, esModuleInterop: true } }).outputText;
@@ -450,6 +450,11 @@ test('production SatelliteService rejects conflicting exact selectors before sel
     };
     vm.runInNewContext(output, { module, exports: module.exports, require: (key: string) => key in injected ? injected[key] : require(key),
         console, Buffer, process, setTimeout, clearTimeout }, { filename: 'satellite.service.ts' });
+    return module.exports.SatelliteService;
+}
+
+test('production SatelliteService rejects conflicting exact selectors before selecting or invoking', async () => {
+    const SatelliteService = loadSatelliteService();
     const selected: any[] = [], invoked: any[] = [], focused: any[] = [];
     const a = {}, b = { focus: (pane: unknown) => focused.push(pane) }, pane = {};
     const session = { sessionId: 'pane-b', tabParent: b, tab: pane, isSplit: true, isFocusedPane: true };
@@ -458,7 +463,7 @@ test('production SatelliteService rejects conflicting exact selectors before sel
     const terminal = { mcpTools: [{ name: 'exec_command', handler }], findTerminalSessions: () => [session],
         findSessionByLocator: ({ sessionId }: any) => sessionId === 'pane-b' ? session : null };
     const tabs = { mcpTools: [{ name: 'split_tab', handler }], findTabByLocator: ({ tabId }: any) => tabId === 'tab-a' ? a : tabId === 'tab-b' ? b : null };
-    const service = new module.exports.SatelliteService(app, { store: {} }, { run: (callback: () => unknown) => callback() },
+    const service = new SatelliteService(app, { store: {} }, { run: (callback: () => unknown) => callback() },
         terminal, tabs, { mcpTools: [] }, { windowID: 1 });
     const signal = new AbortController().signal;
     try {
@@ -475,6 +480,40 @@ test('production SatelliteService rejects conflicting exact selectors before sel
     } finally { service.ngOnDestroy(); }
 });
 
+test('production output routing closes lost sources and resumes with fresh output', async () => {
+    const SatelliteService = loadSatelliteService();
+    const { Subject } = await import('rxjs');
+    const source = new Subject<string>(), replacement = new Subject<string>(), destroyed = new Subject<void>();
+    const pane = { session: { output$: source as unknown }, destroyed };
+    const parent = {};
+    const session = { sessionId: 'pane', tab: pane, tabParent: parent };
+    const terminal = { mcpTools: [], findTerminalSessions: () => [session], findSessionByLocator: () => session };
+    const service = new SatelliteService({ tabs: [parent] }, { store: {} }, { run: (callback: () => unknown) => callback() },
+        terminal, { mcpTools: [] }, { mcpTools: [] }, { windowID: 1 });
+    const read = async (params = {}) => JSON.parse((await service.run('read_terminal_output', { sessionId: 'pane', ...params },
+        protocol.LOCAL_PRINCIPAL, new AbortController().signal)).content[0].text);
+    try {
+        await read(); source.next('old output');
+        const original = await read();
+        assert.equal(Buffer.from(original.data, 'base64').toString(), 'old output');
+        assert.equal(source.observed, true); assert.equal(destroyed.observed, true);
+        const pending = read({ cursor: original.cursor, waitMs: 25000 });
+        const closed = assert.rejects(timeout(pending), { code: 'SESSION_CLOSED' });
+        pane.session.output$ = undefined;
+        await assert.rejects(read(), { code: 'UNSUPPORTED_STREAM' });
+        await closed;
+        assert.equal(source.observed, false); assert.equal(destroyed.observed, false);
+        await assert.rejects(read(), { code: 'UNSUPPORTED_STREAM' });
+        source.next('stale output');
+        pane.session.output$ = replacement;
+        await read(); replacement.next('new output');
+        const resumed = await read({ cursor: original.cursor });
+        assert.equal(resumed.gap, true);
+        assert.equal(Buffer.from(resumed.data, 'base64').toString(), 'new output');
+        assert.equal(replacement.observed, true); assert.equal(destroyed.observed, true);
+    } finally { service.ngOnDestroy(); }
+    assert.equal(replacement.observed, false); assert.equal(destroyed.observed, false);
+});
 
 test('split wraps an unsplit terminal in place and keeps all four directions inside its owning tab', async () => {
     for (const [direction, side] of [['right', 'r'], ['left', 'l'], ['top', 't'], ['bottom', 'b']] as const) {

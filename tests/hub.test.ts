@@ -98,6 +98,38 @@ test('Tailnet IPv6 Host and Origin forms pass trusted request checks', async t =
   assert.equal(await status({ ...headers, Origin: `http://[fd7a::2]:${config.trustedPort}` }), 403);
 });
 
+test('trusted host changes activate only after configuration persists', async t => {
+  const config = await temporaryConfig(); config.trustedHosts = ['old.tailnet.ts.net'];
+  const hub = await startHub(config);
+  t.after(async () => { await hub.close(); await rm(config.stateDir, { recursive: true, force: true }); });
+  const { adminCredential } = JSON.parse(await readFile(join(config.stateDir, 'secrets.json'), 'utf8'));
+  const trust = JSON.parse(await readFile(join(config.stateDir, 'satellite.json'), 'utf8'));
+  const update = () => new Promise<number>((resolve, reject) => {
+    const req = secureRequest(`https://127.0.0.1:${config.satellitePort}/admin/trusted-hosts`, {
+      method: 'POST', ca: trust.certificate, headers: { authorization: `Bearer ${adminCredential}`, 'content-type': 'application/json' },
+    }, res => { res.resume(); res.on('end', () => resolve(res.statusCode!)); });
+    req.on('error', reject); req.end(JSON.stringify({ hosts: ['new.tailnet.ts.net'] }));
+  });
+  const status = (host: string) => new Promise<number | undefined>((resolve, reject) => {
+    request(`http://127.0.0.1:${config.trustedPort}/health`, { headers: {
+      Host: `${host}:${config.trustedPort}`, Origin: `http://${host}:${config.trustedPort}`,
+    } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); }).on('error', reject).end();
+  });
+  const target = join(config.stateDir, 'config.json'), backup = target + '.backup';
+  await rename(target, backup); await mkdir(target);
+  try {
+    assert.equal(await update(), 500);
+    assert.deepEqual(config.trustedHosts, ['old.tailnet.ts.net']);
+    assert.equal(await status('old.tailnet.ts.net'), 200);
+    assert.equal(await status('new.tailnet.ts.net'), 403);
+  } finally { await rm(target, { recursive: true }); await rename(backup, target); }
+  assert.deepEqual(JSON.parse(await readFile(target, 'utf8')).trustedHosts, ['old.tailnet.ts.net']);
+  assert.equal(await update(), 200);
+  assert.deepEqual(JSON.parse(await readFile(target, 'utf8')).trustedHosts, ['new.tailnet.ts.net']);
+  assert.equal(await status('new.tailnet.ts.net'), 200);
+  assert.equal(await status('old.tailnet.ts.net'), 403);
+});
+
 test('initialization keeps private trust identity stable across concurrent callers', async t => {
   const config = await temporaryConfig(); t.after(() => rm(config.stateDir, { recursive: true, force: true }));
   const states = await Promise.all([initializeState(config.stateDir, config), initializeState(config.stateDir, config)]);

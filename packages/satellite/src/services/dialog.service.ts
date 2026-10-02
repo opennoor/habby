@@ -186,8 +186,8 @@ export class DialogService implements OnDestroy {
                     } catch {
                         // Element may be gone - nothing to restore
                     }
+                    resolve(result);
                 }, 0);
-                resolve(result);
             };
 
             const autoRejectTimer = setTimeout(() => finish(false), this.AUTO_REJECT_MS);

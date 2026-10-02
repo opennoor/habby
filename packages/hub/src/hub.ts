@@ -95,8 +95,8 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
     if (req.url === '/admin/trusted-hosts' && req.method === 'POST') {
       const body = await readSmallJson(req);
       if (!Array.isArray(body.hosts) || body.hosts.length > 16 || !body.hosts.every(host => typeof host === 'string' && /^[a-zA-Z0-9.:[\]-]{1,253}$/.test(host))) throw new Error('Invalid trusted hosts.');
+      await writePrivateJson(join(config.stateDir, 'config.json'), { ...config, trustedHosts: body.hosts });
       config.trustedHosts = body.hosts;
-      await writePrivateJson(join(config.stateDir, 'config.json'), config);
       return json(res, 200, { updated: true });
     }
     return json(res, 404, { error: 'Not found.' });

@@ -80,6 +80,7 @@ try {
     const Dialog = module.ɵinj.providers.find(provider => provider.prototype?.showOperationConfirmation);
     const service = new Dialog({ info(){}, warn(){}, error(){} }, { t: key => key }, {}, {});
     service.requestOsAttention = service.clearOsAttention = () => {};
+    window.__modalFocusService = service;
     const outside = document.createElement('button'); outside.id = 'modal-focus-test'; document.body.append(outside); outside.focus();
     service.showDialog('Focus test', 'test', 'test');
     const sequence = [document.activeElement.className];
@@ -98,7 +99,24 @@ try {
   })()`);
   assert.deepEqual(focusSequence, ['reject', 'approve', 'reject', 'approve', 'reject', 'approve'].map(action => `mcp-dialog-btn mcp-dialog-btn-${action}`));
   await waitFor(() => firstWindow("document.activeElement.id === 'modal-focus-test'"), 'dialog focus restoration');
-  await firstWindow("document.getElementById('modal-focus-test').remove();true");
+  await firstWindow(`(() => {
+    window.__queuedModalResults = [];
+    window.__modalFocusService.showOperationConfirmation('queued-first', 'test', 'first').then(result => window.__queuedModalResults.push(result));
+    window.__modalFocusService.showOperationConfirmation('queued-second', 'test', 'second').then(result => window.__queuedModalResults.push(result));
+    return true;
+  })()`);
+  await waitFor(() => firstWindow("document.querySelector('.mcp-dialog-panel')?.getAttribute('aria-label').endsWith('queued-first')"), 'first queued modal');
+  await firstWindow("document.querySelector('.mcp-dialog-btn-approve').click();true");
+  await waitFor(() => firstWindow("document.querySelector('.mcp-dialog-panel')?.getAttribute('aria-label').endsWith('queued-second')"), 'second queued modal');
+  // Check focus after the prior modal's restoration timer has had a real renderer turn.
+  await firstWindow("window.__queuedModalTimerPassed = false; setTimeout(() => window.__queuedModalTimerPassed = true, 20);true");
+  await waitFor(() => firstWindow("window.__queuedModalTimerPassed"), 'queued modal timer turn');
+  assert.equal(await firstWindow("document.querySelectorAll('.mcp-dialog-overlay').length === 1 && document.querySelector('.mcp-dialog-panel').contains(document.activeElement)"), true);
+  await firstWindow("document.querySelector('.mcp-dialog-btn-reject').click();true");
+  await waitFor(() => firstWindow("window.__queuedModalResults.length === 2 && document.activeElement.id === 'modal-focus-test'"), 'final queued modal focus restoration');
+  assert.deepEqual(await firstWindow("window.__queuedModalResults"), [true, false]);
+  assert.equal(await firstWindow("document.querySelectorAll('.mcp-dialog-overlay').length"), 0);
+  await firstWindow("document.getElementById('modal-focus-test').remove(); delete window.__modalFocusService; delete window.__queuedModalResults; delete window.__queuedModalTimerPassed;true");
   await firstWindow("require('electron').ipcRenderer.send('app:new-window')");
   await waitFor(() => online().length === 2, 'second satellite');
   client = new Client({ name: 'real-Tabby-smoke', version: '1' });
@@ -175,7 +193,7 @@ try {
   await secondWindow("setTimeout(()=>require('@electron/remote').getCurrentWindow().destroy(),50);true");
   await waitFor(() => online().length === 0, 'all windows disconnected');
   assert.equal((await client.listTools()).tools.length, 38);
-  console.log('PASS: modal keyboard focus, two real Tabby windows, new tabs, split panes, shell execution, output streaming, and Hub survival.');
+  console.log('PASS: modal keyboard focus and queued-dialog restoration, two real Tabby windows, new tabs, split panes, shell execution, output streaming, and Hub survival.');
 } catch (error) { console.error(stderr); throw error; }
 finally {
   await client?.close(); for (const socket of sockets) socket.close();

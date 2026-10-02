@@ -860,7 +860,7 @@ An interrupted upload can report OUTCOME_UNKNOWN: the remote backend may still c
                     }
 
                     const stats = fs.statSync(params.localPath);
-                    const maxSize = this.config.store.mcp?.sftp?.maxUploadSize || 10 * 1024 * 1024;
+                    const maxSize = this.config.store.mcp?.sftp?.maxUploadSize || 10 * 1024 * 1024 * 1024;
 
                     if (stats.size > maxSize) {
                         return {
@@ -1091,7 +1091,7 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`,
                             throw error;
                         }
 
-                        const maxSize = this.config.store.mcp?.sftp?.maxDownloadSize || 10 * 1024 * 1024;
+                        const maxSize = this.config.store.mcp?.sftp?.maxDownloadSize || 10 * 1024 * 1024 * 1024;
 
                         if (remoteStats.size > maxSize) {
                             return {

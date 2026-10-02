@@ -331,3 +331,35 @@ test('failed transfer preflight releases capacity without inserting history or o
     assert.equal(tools.activeTransfers, 0); assert.equal(tools.getTransfers().length, 0);
     assert.deepEqual(fs.readdirSync(directory), ['existing']);
 });
+
+test('missing transfer size settings use 10 GiB defaults while explicit limits remain enforced', async t => {
+    const { directory, destination } = fixture(t);
+    const overTenMiB = 11 * 1024 * 1024;
+    fs.truncateSync(destination, overTenMiB);
+    let uploads = 0, downloads = 0, remoteSize = overTenMiB;
+    const tools = category({
+        stat: async () => ({ size: remoteSize }),
+        upload: async () => { uploads++; throw new Error('Upload admitted'); },
+        download: async () => { downloads++; throw new Error('Download admitted'); },
+    });
+    const invoke = async (name: string) => JSON.parse((await tools.mcpTools.find((tool: any) => tool.name === name).handler({
+        localPath: destination, remotePath: '/file',
+    })).content[0].text);
+    // Both a partially populated SFTP config and a missing section occur on upgrades.
+    for (const settings of [{ timeout: 10000 }, undefined]) {
+        tools.config.store.mcp.sftp = settings;
+        assert.match((await invoke('sftp_upload')).error, /Upload admitted/);
+        assert.match((await invoke('sftp_download')).error, /Download admitted/);
+    }
+    assert.equal(uploads, 2); assert.equal(downloads, 2);
+    tools.config.store.mcp.sftp = { maxUploadSize: 10 * 1024 * 1024, maxDownloadSize: 10 * 1024 * 1024 };
+    assert.match((await invoke('sftp_upload')).error, /File too large/);
+    assert.match((await invoke('sftp_download')).error, /File too large/);
+    assert.equal(uploads, 2); assert.equal(downloads, 2);
+    tools.config.store.mcp.sftp = {};
+    remoteSize = 10 * 1024 * 1024 * 1024 + 1;
+    assert.match((await invoke('sftp_download')).error, /max: 10737418240/);
+    assert.equal(downloads, 2);
+    assert.equal(fs.statSync(destination).size, overTenMiB);
+    assert.deepEqual(fs.readdirSync(directory), ['existing']);
+});
