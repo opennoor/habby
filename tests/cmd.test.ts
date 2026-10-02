@@ -62,6 +62,17 @@ test('native CMD completion survives nonzero exits and incomplete IF before anot
         t.diagnostic(JSON.stringify({ rawCmdCase: name, status: native.status, error: native.error?.message,
             stdout: native.stdout, stderr: native.stderr }));
     }
+    const diagnosticDir = mkdtempSync(join(tmpdir(), 'tabby-cmd-subroutine-'));
+    t.after(() => rmSync(diagnosticDir, { recursive: true, force: true }));
+    for (const [name, command] of [['exit-zero', 'exit /b 0'], ['exit-seven', 'exit /b 7'], ['incomplete-group', 'if 1==1 (']]) {
+        const batch = join(diagnosticDir, `${name}.cmd`);
+        writeFileSync(batch, `@echo off\r\ncall :user\r\necho CallerDone\r\nexit /b %errorlevel%\r\n:user\r\n${command}\r\n`);
+        const native = spawnSync(process.env.ComSpec!, ['/d', '/q', '/s', '/c', `""${batch}""`], {
+            windowsVerbatimArguments: true, encoding: 'utf8', timeout: 10000,
+        });
+        t.diagnostic(JSON.stringify({ subroutineCmdCase: name, status: native.status, error: native.error?.message,
+            stdout: native.stdout, stderr: native.stderr }));
+    }
     const results = runCommands(t, ['echo before-failure\nexit /b 7', 'if 1==1 (', 'echo outer-still-usable\nexit /b 0']);
     assert.equal(results[0].exitCode, 7); assert.match(results[0].output, /before-failure/);
     assert.notEqual(results[1].exitCode, 0, 'Incomplete syntax must fail, not consume the outer completion marker.');
