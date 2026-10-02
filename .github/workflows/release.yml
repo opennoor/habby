@@ -1,11 +1,11 @@
 name: Build release archives
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   check:
+    if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/check.yml
   bundle:
     needs: check

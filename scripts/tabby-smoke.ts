@@ -1,4 +1,4 @@
-/** Linux acceptance check in an isolated Tabby profile and Xvfb display. Never installs a supervisor. */
+/** Native acceptance check in an isolated Tabby profile. Linux uses Xvfb. Never installs a supervisor. */
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, cp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,13 +6,18 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { WebSocket } from 'ws';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startHub } from '../packages/hub/src/hub.js';
 import { LOCAL_PRINCIPAL, parseGlobalId } from '../shared/protocol.js';
 
-if (process.platform !== 'linux') throw new Error('This acceptance check requires Linux, Tabby and xvfb-run.');
+const isWindows = process.platform === 'win32';
+if (process.platform !== 'linux' && !isWindows) throw new Error('This acceptance check supports Linux and Windows.');
+if (isWindows && !process.env.TABBY_EXECUTABLE) throw new Error('Set TABBY_EXECUTABLE to the Windows Tabby executable.');
+const waitMs = Number(process.env.TABBY_SMOKE_TIMEOUT_MS ?? 45000);
+assert.ok(Number.isInteger(waitMs) && waitMs >= 10000 && waitMs <= 600000, 'Invalid TABBY_SMOKE_TIMEOUT_MS.');
 const root = fileURLToPath(new URL('../', import.meta.url));
 const temp = await mkdtemp(join(tmpdir(), 'tabby-hub-gui-'));
 async function freePort() {
@@ -21,7 +26,7 @@ async function freePort() {
   await new Promise<void>(resolve => server.close(() => resolve())); return port;
 }
 async function waitFor<T>(check: () => T | Promise<T>, label: string): Promise<NonNullable<T>> {
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     const result = await check(); if (result) return result as NonNullable<T>;
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -42,8 +47,9 @@ try {
   await writeFile(join(plugin, 'hub-state.json'), JSON.stringify({ stateDir: config.stateDir }));
   await writeFile(join(data, 'config.yaml'), 'version: 7\nmcp:\n  pairProgrammingMode:\n    enabled: false\n    showConfirmationDialog: false\n    confirmFileOperations: false\n');
   const debugPort = await freePort();
-  app = spawn('xvfb-run', ['-a', process.env.TABBY_EXECUTABLE ?? '/opt/Tabby/tabby', '--no-sandbox',
-    `--user-data-dir=${data}`, `--remote-debugging-port=${debugPort}`, '--disable-gpu'], {
+  const executable = process.env.TABBY_EXECUTABLE ?? '/opt/Tabby/tabby';
+  const appArgs = ['--no-sandbox', `--user-data-dir=${data}`, `--remote-debugging-port=${debugPort}`, '--disable-gpu'];
+  app = spawn(isWindows ? executable : 'xvfb-run', isWindows ? appArgs : ['-a', executable, ...appArgs], {
     env: { ...process.env, TABBY_CONFIG_DIRECTORY: data, TABBY_PLUGINS: '', NODE_PATH: '' },
     detached: true, stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -64,7 +70,7 @@ try {
     return async (expression: string) => {
       const id = ++serial;
       const result = await new Promise<any>((resolve, reject) => {
-        const timer = setTimeout(() => { pending.delete(id); reject(new Error('Debugger request timed out.')); }, 10000);
+        const timer = setTimeout(() => { pending.delete(id); reject(new Error('Debugger request timed out.')); }, waitMs);
         pending.set(id, { resolve: result => { clearTimeout(timer); resolve(result); }, reject: error => { clearTimeout(timer); reject(error); } });
         socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }));
       });
@@ -128,14 +134,15 @@ try {
     assert.notEqual(value.success, false, JSON.stringify(value)); return value;
   };
   const execute = async (sessionId: string, marker: string) => {
-    const result = await tool('exec_command', { sessionId, command: `printf ${marker}`, timeout: 10000 });
+    const result = await tool('exec_command', { sessionId, command: isWindows ? `Write-Output ${marker}` : `printf ${marker}`, timeout: 30000 });
     assert.equal(result.success, true); assert.equal(result.exitCode, 0); assert.match(result.output, new RegExp(marker));
   };
   const windows = (await tool('list_windows', {})).windows.filter((window: any) => window.online);
   const sessions: string[] = [];
   for (const [index, window] of windows.entries()) {
-    const profile = window.profiles.find((profile: any) => profile.name === 'bash'); assert(profile);
-    const opened = await tool('open_profile', { windowId: window.windowId, profileId: profile.profileId, waitForReady: true, timeout: 10000 });
+    const profile = window.profiles.find((profile: any) => isWindows ? /powershell/i.test(profile.name) : profile.name === 'bash');
+    assert(profile, `Native shell profile missing: ${JSON.stringify(window.profiles)}`);
+    const opened = await tool('open_profile', { windowId: window.windowId, profileId: profile.profileId, waitForReady: true, timeout: 30000 });
     assert.equal(opened.ready, true, JSON.stringify(opened));
     sessions.push(opened.sessionId);
     const output = await tool('read_terminal_output', { sessionId: opened.sessionId });
@@ -197,6 +204,9 @@ try {
 } catch (error) { console.error(stderr); throw error; }
 finally {
   await client?.close(); for (const socket of sockets) socket.close();
-  if (app?.pid) { try { process.kill(-app.pid, 'SIGTERM'); } catch {} await new Promise(resolve => setTimeout(resolve, 500)); try { process.kill(-app.pid, 'SIGKILL'); } catch {} }
+  if (app?.pid) {
+    if (isWindows) await promisify(execFile)('taskkill.exe', ['/PID', String(app.pid), '/T', '/F']).catch(() => {});
+    else { try { process.kill(-app.pid, 'SIGTERM'); } catch {} await new Promise(resolve => setTimeout(resolve, 500)); try { process.kill(-app.pid, 'SIGKILL'); } catch {} }
+  }
   await hub.close(); await rm(temp, { recursive: true, force: true });
 }

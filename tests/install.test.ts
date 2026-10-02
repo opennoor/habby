@@ -338,3 +338,39 @@ test('Windows deregistration script distinguishes missing, denied and still-runn
     if (scenario === 'running') { assert.deepEqual(result.events, ['stop']); assert.match(result.error, /instances did not stop/); }
   }
 });
+
+test('Windows native test runner retains pre-existing users and fixture directories', async t => {
+  const execute = promisify(execFile);
+  try { await execute('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']); }
+  catch { t.skip('PowerShell runtime unavailable on this host'); return; }
+  const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-native-fixture-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
+  const runner = fileURLToPath(new URL('../scripts/windows-native-tests.ps1', import.meta.url));
+  const script = `
+    $ErrorActionPreference='Stop'; $env:PUBLIC=${quote(home)}
+    $created=[Collections.Generic.List[string]]::new(); $removed=[Collections.Generic.List[string]]::new()
+    function Get-Command { param($Name,$CommandType) [pscustomobject]@{Source='unused-fixture-executable'} }
+    function New-LocalUser { param($Name,$Password)
+      if($Name -eq 'tabby-hub-reader-ci') { throw 'Reader already exists' }
+      $created.Add($Name)
+    }
+    function Remove-LocalUser { param($Name,$ErrorAction) $removed.Add($Name) }
+    try { & ${quote(runner)}; throw 'Expected setup failure' }
+    catch { if($_.Exception.Message -ne 'Reader already exists') { throw } }
+    if(($created -join ',') -ne 'tabby-hub-ci' -or ($removed -join ',') -ne 'tabby-hub-ci') {
+      throw 'Cleanup removed an account this run did not create'
+    }
+    $root=Join-Path $env:PUBLIC 'tabby-hub-ci-tests'
+    New-Item -ItemType Directory -Path $root | Out-Null
+    Set-Content -LiteralPath (Join-Path $root 'keep.txt') -Value 'retain'
+    $created.Clear(); $removed.Clear()
+    try { & ${quote(runner)}; throw 'Accepted existing test directory' }
+    catch { if($_.Exception.Message -ne "Test directory already exists: $root") { throw } }
+    if($created.Count -or $removed.Count -or (Get-Content -LiteralPath (Join-Path $root 'keep.txt')) -ne 'retain') {
+      throw 'Existing fixture directory or users were changed'
+    }
+    Write-Output 'PASS: only owned fixture users and directories are cleaned up'
+  `;
+  assert.match((await execute('pwsh', ['-NoProfile', '-NonInteractive', '-Command', script])).stdout, /PASS: only owned/);
+});

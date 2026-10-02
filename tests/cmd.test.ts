@@ -9,6 +9,8 @@ import { CommandCapture, commandWrapper } from '../packages/satellite/src/runtim
 // Windows local and version-release test runs use actual cmd.exe and PS5.1.
 // Other hosts skip; a string-shape assertion is not evidence of native CMD parsing.
 function runCommands(t: any, commands: string[], setup = '') {
+    const timeout = Number(process.env.TABBY_HUB_NATIVE_TEST_TIMEOUT_MS ?? 30000);
+    assert.ok(Number.isInteger(timeout) && timeout >= 30000 && timeout <= 900000, 'Invalid native test timeout.');
     const directory = mkdtempSync(join(tmpdir(), 'tabby-cmd-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const payloadDir = join(directory, 'payload space & (parentheses) café');
@@ -20,7 +22,7 @@ function runCommands(t: any, commands: string[], setup = '') {
     const native = spawnSync(process.env.ComSpec ?? join(process.env.SystemRoot!, 'System32', 'cmd.exe'),
         ['/d', '/q', '/v:off', '/s', '/c', `""${outer}""`], {
             cwd: directory, env: { ...process.env, TEMP: payloadDir, TMP: payloadDir },
-            windowsVerbatimArguments: true, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
+            windowsVerbatimArguments: true, encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024,
         });
     assert.ifError(native.error);
     assert.equal(native.status, 0, `Outer CMD must survive all child commands.\n${native.stdout}\n${native.stderr}`);

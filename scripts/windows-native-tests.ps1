@@ -1,15 +1,18 @@
+param([ValidateRange(30,3600)][int]$TimeoutSeconds = 180)
 $ErrorActionPreference = 'Stop'
 $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 $user = 'tabby-hub-ci'
 $otherUser = 'tabby-hub-reader-ci'
 $secure = ConvertTo-SecureString ([guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
 $testRoot = Join-Path $env:PUBLIC 'tabby-hub-ci-tests'
+if (Test-Path -LiteralPath $testRoot) { throw "Test directory already exists: $testRoot" }
 $manifestPath = Join-Path $testRoot 'probe.json'
 $projectRoot = Split-Path $PSScriptRoot
 $node = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
 $powershell = (Get-Command powershell.exe -CommandType Application | Select-Object -First 1).Source
 New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
 New-LocalUser -Name $user -Password $secure | Out-Null
+$createdOtherUser = $false
 function Invoke-StandardUser($account, $executable, $arguments, $logPrefix) {
   $credential = [pscredential]::new("$env:COMPUTERNAME\$account", $secure)
   $stdout = Join-Path $testRoot "$logPrefix-stdout.log"
@@ -17,15 +20,16 @@ function Invoke-StandardUser($account, $executable, $arguments, $logPrefix) {
   $test = Start-Process -FilePath $executable -WorkingDirectory $projectRoot -Credential $credential -LoadUserProfile -PassThru `
     -ArgumentList $arguments -RedirectStandardOutput $stdout -RedirectStandardError $stderr
   $processHandle = $test.Handle # Preserve ExitCode for redirected Start-Process children.
-  if (-not $test.WaitForExit(180000)) {
+  if (-not $test.WaitForExit($TimeoutSeconds * 1000)) {
     Stop-Process -Id $test.Id -Force -ErrorAction SilentlyContinue
-    throw 'Native Windows test exceeded three minutes.'
+    throw "Native Windows test exceeded $TimeoutSeconds seconds."
   }
   Get-Content $stdout,$stderr
   if ($test.ExitCode -ne 0) { throw "Native Windows test exited $($test.ExitCode)." }
 }
 try {
   New-LocalUser -Name $otherUser -Password $secure | Out-Null
+  $createdOtherUser = $true
   & icacls.exe $testRoot /grant "$($env:COMPUTERNAME)\${user}:(OI)(CI)M" | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Could not grant standard user fixture access.' }
   & icacls.exe $testRoot /grant "$($env:COMPUTERNAME)\${otherUser}:(OI)(CI)RX" | Out-Null
@@ -76,7 +80,7 @@ exit 0
       Invoke-StandardUser $user $powershell "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cleanupPath`"" 'cleanup'
     }
   } finally {
-    Remove-LocalUser -Name $otherUser -ErrorAction SilentlyContinue
+    if ($createdOtherUser) { Remove-LocalUser -Name $otherUser -ErrorAction SilentlyContinue }
     Remove-LocalUser -Name $user
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
