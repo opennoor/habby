@@ -50,7 +50,7 @@ Still unverified:
 - Physical Dock attention, IME interaction, hardware GPU rendering and macOS permission/Gatekeeper prompts. The GUI smoke disables GPU and stubs OS attention in its modal-focus fixture.
 - Live SSH/SFTP hosts, deployed Tailscale/Funnel/HTTPS, phone passkey approval and real AI-client sessions.
 
-Existing Windows native release blockers remain. This report does not approve or publish the draft release.
+Remaining Windows operational acceptance is recorded in the Windows report. No release was published during these native checks. See [v1.0.0 release validation](validation-1.0.0.md) for refreshed packages and the remaining coverage limits.
 
 ## Repeat the source and GUI checks
 

@@ -1,6 +1,6 @@
 {
   "name": "tabby-hub-satellite",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "Roy Gh",
   "description": "Window satellite for Tabby Hub MCP",
   "main": "dist/index.js",

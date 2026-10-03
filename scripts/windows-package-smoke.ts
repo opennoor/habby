@@ -40,8 +40,8 @@ async function waitFor<T>(check: () => Promise<T>, label: string, timeout = 3000
   }
   throw new Error(`Timed out: ${label}`);
 }
-const bundleName = 'tabby-hub-0.1.0-win-x64';
-const bundle = join(local, 'TabbyHub', 'versions', '0.1.0-win-x64');
+const bundleName = 'tabby-hub-1.0.0-win-x64';
+const bundle = join(local, 'TabbyHub', 'versions', '1.0.0-win-x64');
 let runtime = join(bundle, 'runtime', 'node.exe'), cli = join(bundle, 'dist', 'packages', 'hub', 'src', 'cli.js');
 const run = (...args: string[]) => execute(runtime, [cli, ...args, '--state-dir', stateDir], { env, windowsHide: true, timeout: 120000 });
 try {
@@ -52,7 +52,7 @@ try {
   await mkdir(join(pluginDir, 'node_modules', 'unrelated'), { recursive: true });
   await writeFile(join(pluginDir, 'node_modules', 'unrelated', 'keep'), 'retain');
   const installer = resolve('scripts/install.ps1');
-  const install = (directory: string) => ps(`& ${psQuote(installer)} -Version 0.1.0 -ArchiveDir ${psQuote(directory)} -PluginDir ${psQuote(pluginDir)}`, env);
+  const install = (directory: string) => ps(`& ${psQuote(installer)} -Version 1.0.0 -ArchiveDir ${psQuote(directory)} -PluginDir ${psQuote(pluginDir)}`, env);
   const bad = join(root, 'bad-checksum'); await mkdir(bad);
   await cp(join(releaseDir, `${bundleName}.tar.gz`), join(bad, `${bundleName}.tar.gz`));
   await writeFile(join(bad, 'SHA256SUMS'), `${'0'.repeat(64)}  ${bundleName}.tar.gz\n`);

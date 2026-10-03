@@ -13,19 +13,19 @@ The checked-in installers consume versioned GitHub releases and `SHA256SUMS`. Th
 On Linux or macOS, inspect the downloaded `install.sh`, then run:
 
 ```sh
-VERSION=0.1.0 sh install.sh
+VERSION=1.0.0 sh install.sh
 # For downloads made in a browser:
-VERSION=0.1.0 ARCHIVE_DIR="$HOME/Downloads/tabby-release" sh install.sh
+VERSION=1.0.0 ARCHIVE_DIR="$HOME/Downloads/tabby-release" sh install.sh
 # Portable/custom Tabby profile: pass its userPluginsPath (parent of node_modules).
-VERSION=0.1.0 sh install.sh --plugin-dir "/path/to/tabby/plugins"
+VERSION=1.0.0 sh install.sh --plugin-dir "/path/to/tabby/plugins"
 ```
 
 On Windows, inspect the downloaded `install.ps1`, then run it in PowerShell:
 
 ```powershell
-.\install.ps1 -Version 0.1.0
-.\install.ps1 -Version 0.1.0 -ArchiveDir "$HOME\Downloads\tabby-release"
-.\install.ps1 -Version 0.1.0 -PluginDir "D:\PortableTabby\plugins"
+.\install.ps1 -Version 1.0.0
+.\install.ps1 -Version 1.0.0 -ArchiveDir "$HOME\Downloads\tabby-release"
+.\install.ps1 -Version 1.0.0 -PluginDir "D:\PortableTabby\plugins"
 ```
 
 Windows needs the built-in `tar.exe` available on supported Windows 10/11. Scripts install into version-specific user directories and update the supervisor to the new absolute runtime/entrypoint. They preserve previous version directories for explicit rollback. Rerunning the same version refuses to overwrite that version's immutable directory. Different-version upgrades replace only this satellite and service; unrelated Tabby plugins and Tailscale mappings are retained. Add the printed launcher directory to your user `PATH`, then restart existing Tabby windows once.
@@ -81,7 +81,7 @@ On Linux with Tabby and `xvfb-run` installed, `pnpm smoke:tabby` loads the compi
 
 The same smoke test supports Windows with `TABBY_EXECUTABLE` set to the full path of `Tabby.exe`; it uses a native PowerShell profile. `TABBY_SMOKE_TIMEOUT_MS` controls GUI startup/polling deadlines on slow test machines (default 45000, maximum 600000). `TABBY_SMOKE_COMMAND_TIMEOUT_MS` controls its command deadline (default 30000, maximum 300000). On an isolated Windows test machine, run `scripts/windows-native-tests.ps1` from an administrator shell to create two temporary standard users and verify private-state access across them. `-TimeoutSeconds 900` allows a slower VM more time; the default is 180 seconds. The script removes accounts it created afterwards. If the repository is in a private user profile, stage the tests/runtime/dependencies somewhere those users can traverse and pass `-ProjectRoot` for that checkout or compiled fixture. This elevation is for the cross-user test fixture, not ordinary Hub installation.
 
-After `pnpm build` and `pnpm release win-x64`, `pnpm smoke:windows-package` exercises the local 0.1.0 x64 archive, installer and real Task Scheduler lifecycle. It refuses an existing current-user Hub task and isolates state, plugin and version directories, while retaining an unrelated fixture plugin. Run it on a disposable acceptance account with an existing desktop login; its daemon crash is intentional. Aggregate startup waits allow five minutes on slow hosts. The production helper deadlines remain unchanged. Repeating native triggers recover a stopped/crashed daemon; `IgnoreNew` prevents additional live instances. `--no-start` omits the registration trigger and waits for the next logon.
+After `pnpm build` and `pnpm release win-x64`, `pnpm smoke:windows-package` exercises the local 1.0.0 x64 archive, installer and real Task Scheduler lifecycle. It refuses an existing current-user Hub task and isolates state, plugin and version directories, while retaining an unrelated fixture plugin. Run it on a disposable acceptance account with an existing desktop login; its daemon crash is intentional. Aggregate startup waits allow five minutes on slow hosts. The production helper deadlines remain unchanged. Repeating native triggers recover a stopped/crashed daemon; `IgnoreNew` prevents additional live instances. `--no-start` omits the registration trigger and waits for the next logon.
 
 On macOS, `pnpm smoke:tabby` launches `/Applications/Tabby.app/Contents/MacOS/Tabby` directly and uses Zsh. Set `TABBY_EXECUTABLE` for another application location. It retains the isolated temporary profile and does not register a LaunchAgent or edit the user's profile.
 

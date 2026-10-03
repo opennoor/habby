@@ -1,5 +1,7 @@
 # v0.1.0 local validation
 
+This historical record retains the pre-release acceptance results and failed attempts. See [v1.0.0 release validation](validation-1.0.0.md) for refreshed packages and current coverage limits.
+
 Validated on 2026-10-03 using pnpm 11.6.0 and Node 24.21.0. No AI API calls or CI test runs were used. Official runtime downloads, the package advisory registry and GitHub publication are ordinary network operations.
 
 | Check | Result |
@@ -32,4 +34,4 @@ Native Intel macOS operational checks now pass on macOS 26.6.2 with Tabby 1.0.23
 
 Live phone approval through a deployed Funnel/public URL and real AI-client sessions were not exercised. Local protocol tests cover OAuth/PKCE, passkey verification, scopes, revocation, discovery and the stdio bridge.
 
-A production release remains blocked by the outstanding Windows operational checks listed in the [Windows report](validation-windows.md). Failed/time-limited attempts are not counted as passes. ARM artifacts remain experimental until native acceptance; Intel macOS operational checks pass with the manual acceptance limits above. The prepared GitHub release remains a draft.
+The outstanding Windows operational checks are listed in the [Windows report](validation-windows.md) and carried into the [v1.0.0 known limits](validation-1.0.0.md). Failed/time-limited attempts are not counted as passes. ARM artifacts remain experimental until native acceptance; Intel macOS operational checks pass with the manual acceptance limits above.

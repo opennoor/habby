@@ -62,4 +62,4 @@ Its PATH excludes development Node/pnpm; installed execution uses the bundled ru
 
 ## Remaining acceptance
 
-Standard-user package/service operations with UAC enabled, actual logout/login and reboot persistence, Windows ARM64, physical attention/focus behavior, IME and hardware GPU rendering remain unverified. GUI automation launches an isolated profile with GPU disabled. Live SSH/SFTP, deployed public/Funnel phone approval and real AI-client sessions were not part of these local runs. The existing production-release blocker remains until the missing native operational checks pass; the draft release was not published.
+Standard-user package/service operations with UAC enabled, actual logout/login and reboot persistence, Windows ARM64, physical attention/focus behavior, IME and hardware GPU rendering remain unverified. GUI automation launches an isolated profile with GPU disabled. Live SSH/SFTP, deployed public/Funnel phone approval and real AI-client sessions were not part of these local runs. No release was published during these native checks. See [v1.0.0 release validation](validation-1.0.0.md) for refreshed packages and the remaining coverage limits.

@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-# Run an inspected, downloaded script. VERSION must be an explicit release tag (for example 0.1.0).
+# Run an inspected, downloaded script. VERSION must be an explicit release tag (for example 1.0.0).
 version=${VERSION:?Set VERSION to the release version, without the v prefix}
 case "$version" in *[!0-9A-Za-z._-]*|'') echo 'Invalid VERSION' >&2; exit 1;; esac
 case $(uname -s) in Linux) platform=linux;; Darwin) platform=darwin;; *) echo 'Use install.ps1 on Windows.' >&2; exit 1;; esac

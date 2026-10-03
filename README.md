@@ -4,6 +4,10 @@ One MCP endpoint for all your Tabby windows. A standalone Node daemon routes
 requests to a satellite plugin in each window, preserving its tabs, panes,
 profiles, terminals and SFTP sessions.
 
+[Download v1.0.0](https://github.com/Sojaner/tabby-hub-mcp/releases/tag/v1.0.0)
+for bundled Node runtimes, the Hub and the satellite plugin. See the
+[installation instructions](docs/installation.md) and [release validation](docs/validation-1.0.0.md).
+
 ## Run from source
 
 Use **pnpm 11.6.0**; pnpm downloads the pinned Node 24.21.0 runtime.
@@ -42,7 +46,7 @@ Installation does not expose network access automatically.
 - [Architecture](docs/architecture.md)
 - [Tabby-MCP capability inventory](docs/tabby-mcp-capabilities.md)
 - [Authentication and network boundaries](docs/authentication.md)
-- [v0.1.0 local validation and release blockers](docs/validation-0.1.0.md)
+- [v1.0.0 release validation and known limitations](docs/validation-1.0.0.md)
 - [Native macOS validation and remaining acceptance](docs/validation-macos.md)
 - [Native Windows validation and remaining acceptance](docs/validation-windows.md)
 

@@ -1,6 +1,6 @@
 {
   "name": "tabby-hub-mcp",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "One MCP Hub for every Tabby window",
   "type": "module",
   "license": "MIT",
