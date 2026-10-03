@@ -296,6 +296,48 @@ test('native Windows uninstall recognizes a genuinely unregistered task', { skip
   await assert.rejects(access(stateDir));
 });
 
+test('macOS upgrade retries transient bootstrap failure and surfaces supervisor errors', { skip: !process.getuid, timeout: 10000 }, async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-launchd-upgrade-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const source = path.join(home, 'source'), stateDir = path.join(home, 'state');
+  await mkdir(path.join(source, 'dist'), { recursive: true }); await mkdir(stateDir);
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite' }));
+  await writeFile(path.join(source, 'dist/index.js'), 'plugin');
+  await writeFile(path.join(stateDir, 'satellite.json'), '{}', { mode: 0o600 });
+  const options = { config: { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 },
+    platform: 'darwin' as const, home, env: {}, pluginSource: source };
+  const transient = Object.assign(new Error('Bootstrap failed: 5: Input/output error'), { code: 5 });
+  let attempts = 0;
+  const installed = await installHub({ ...options, exec: async (_file, args) => {
+    if (args[0] === 'bootstrap' && ++attempts === 1) throw transient;
+  } });
+  assert.equal(installed.started, true); assert.equal(attempts, 2);
+  await access(installed.servicePath);
+  const denied = Object.assign(new Error('Permission denied'), { code: 1 });
+  attempts = 0;
+  await assert.rejects(installHub({ ...options, exec: async (_file, args) => {
+    if (args[0] === 'bootstrap') { attempts++; throw denied; }
+  } }), error => error === denied);
+  assert.equal(attempts, 1);
+  attempts = 0;
+  await assert.rejects(installHub({ ...options, exec: async (_file, args) => {
+    if (args[0] === 'bootout') throw denied;
+    if (args[0] === 'bootstrap') attempts++;
+  } }), error => error === denied);
+  assert.equal(attempts, 0, 'A failed bootout must abort replacement.');
+  attempts = 0;
+  await assert.rejects(installHub({ ...options, exec: async (_file, args) => {
+    if (args[0] === 'bootout') throw Object.assign(new Error('No such service'), { code: 3 });
+    if (args[0] === 'bootstrap') { attempts++; throw transient; }
+  } }), error => error === transient);
+  assert.equal(attempts, 1, 'Fresh installation must not retry an unrelated bootstrap error.');
+  attempts = 0;
+  await assert.rejects(installHub({ ...options, exec: async (_file, args) => {
+    if (args[0] === 'bootstrap') { attempts++; throw transient; }
+  } }), error => error === transient);
+  assert.ok(attempts > 1, 'Persistent upgrade failure must surface after bounded retries.');
+});
+
 
 test('Windows deregistration script distinguishes missing, denied and still-running tasks', async t => {
   const execute = promisify(execFile);

@@ -43,13 +43,17 @@ Installation does not expose network access automatically.
 - [Tabby-MCP capability inventory](docs/tabby-mcp-capabilities.md)
 - [Authentication and network boundaries](docs/authentication.md)
 - [v0.1.0 local validation and release blockers](docs/validation-0.1.0.md)
+- [Native macOS validation and remaining acceptance](docs/validation-macos.md)
 
 Release tooling builds bundles for Linux, macOS and Windows, on x64 and arm64.
 The Linux acceptance check (`pnpm smoke:tabby`, with Tabby and Xvfb installed)
 exercises two real windows, new tabs, split panes, shell execution, output streaming
 and Hub survival. Linux x64 installation and the real systemd service lifecycle
-also pass local acceptance. macOS/Windows GUI, their native supervisors and ARM
-targets remain experimental pending native acceptance. MCP routing, TLS, OAuth/passkeys and installer behavior have
+also pass local acceptance. Native Intel macOS checks pass with Tabby 1.0.237,
+Bash/Zsh, the packaged installer and the LaunchAgent lifecycle, including crash
+recovery and upgrade. Apple Silicon, other ARM targets and complete Windows
+native acceptance remain unverified; macOS login/reboot and interactive checks
+are listed in the validation report. MCP routing, TLS, OAuth/passkeys and installer behavior have
 automated coverage.
 
 ## License

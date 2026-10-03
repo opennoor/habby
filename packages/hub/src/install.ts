@@ -94,8 +94,20 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
   } else if (platform === 'darwin') {
     const domain = `gui/${process.getuid!()}`;
     // Replacing an existing definition requires unloading it first.
-    try { await exec('launchctl', ['bootout', `${domain}/com.tabby-hub.mcp`]); } catch { /* not previously loaded */ }
-    if (start) await exec('launchctl', ['bootstrap', domain, target]);
+    let replacing = false;
+    try { await exec('launchctl', ['bootout', `${domain}/com.tabby-hub.mcp`]); replacing = true; }
+    catch (error) { if ((error as { code?: number }).code !== 3) throw error; } // ESRCH: no such service
+    if (start) {
+      // launchd can briefly return EIO after a successful bootout while retiring the old job.
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        try { await exec('launchctl', ['bootstrap', domain, target]); break; }
+        catch (error) {
+          if (!replacing || (error as { code?: number }).code !== 5 || Date.now() >= deadline) throw error;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+    }
   } else {
     await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $existing=Get-ScheduledTask -TaskName ${psQuote(taskName(env))} -ErrorAction SilentlyContinue; if ($existing) { $existing | Stop-ScheduledTask }; Register-ScheduledTask -TaskName ${psQuote(taskName(env))} -Xml (Get-Content -Raw -LiteralPath ${psQuote(target)}) -User ($env:USERDOMAIN+'\\'+$env:USERNAME) -Force | Out-Null`]);
     if (start) await exec('schtasks.exe', ['/Run', '/TN', taskName(env)]);

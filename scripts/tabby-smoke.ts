@@ -14,7 +14,8 @@ import { startHub } from '../packages/hub/src/hub.js';
 import { LOCAL_PRINCIPAL, parseGlobalId } from '../shared/protocol.js';
 
 const isWindows = process.platform === 'win32';
-if (process.platform !== 'linux' && !isWindows) throw new Error('This acceptance check supports Linux and Windows.');
+const isMac = process.platform === 'darwin';
+if (process.platform !== 'linux' && !isWindows && !isMac) throw new Error('This acceptance check supports Linux, macOS and Windows.');
 if (isWindows && !process.env.TABBY_EXECUTABLE) throw new Error('Set TABBY_EXECUTABLE to the Windows Tabby executable.');
 const waitMs = Number(process.env.TABBY_SMOKE_TIMEOUT_MS ?? 45000);
 assert.ok(Number.isInteger(waitMs) && waitMs >= 10000 && waitMs <= 600000, 'Invalid TABBY_SMOKE_TIMEOUT_MS.');
@@ -47,9 +48,9 @@ try {
   await writeFile(join(plugin, 'hub-state.json'), JSON.stringify({ stateDir: config.stateDir }));
   await writeFile(join(data, 'config.yaml'), 'version: 7\nmcp:\n  pairProgrammingMode:\n    enabled: false\n    showConfirmationDialog: false\n    confirmFileOperations: false\n');
   const debugPort = await freePort();
-  const executable = process.env.TABBY_EXECUTABLE ?? '/opt/Tabby/tabby';
+  const executable = process.env.TABBY_EXECUTABLE ?? (isMac ? '/Applications/Tabby.app/Contents/MacOS/Tabby' : '/opt/Tabby/tabby');
   const appArgs = ['--no-sandbox', `--user-data-dir=${data}`, `--remote-debugging-port=${debugPort}`, '--disable-gpu'];
-  app = spawn(isWindows ? executable : 'xvfb-run', isWindows ? appArgs : ['-a', executable, ...appArgs], {
+  app = spawn(isWindows || isMac ? executable : 'xvfb-run', isWindows || isMac ? appArgs : ['-a', executable, ...appArgs], {
     env: { ...process.env, TABBY_CONFIG_DIRECTORY: data, TABBY_PLUGINS: '', NODE_PATH: '' },
     detached: true, stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -140,7 +141,7 @@ try {
   const windows = (await tool('list_windows', {})).windows.filter((window: any) => window.online);
   const sessions: string[] = [];
   for (const [index, window] of windows.entries()) {
-    const profile = window.profiles.find((profile: any) => isWindows ? /powershell/i.test(profile.name) : profile.name === 'bash');
+    const profile = window.profiles.find((profile: any) => isWindows ? /powershell/i.test(profile.name) : profile.name === (isMac ? 'zsh' : 'bash'));
     assert(profile, `Native shell profile missing: ${JSON.stringify(window.profiles)}`);
     const opened = await tool('open_profile', { windowId: window.windowId, profileId: profile.profileId, waitForReady: true, timeout: 30000 });
     assert.equal(opened.ready, true, JSON.stringify(opened));
