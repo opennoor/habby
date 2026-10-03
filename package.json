@@ -33,7 +33,8 @@
     "check": "pnpm typecheck && pnpm test && pnpm build",
     "dev": "node --import tsx packages/hub/src/cli.ts",
     "release": "node --import tsx scripts/release.ts",
-    "smoke:tabby": "pnpm build && node --import tsx scripts/tabby-smoke.ts"
+    "smoke:tabby": "pnpm build && node --import tsx scripts/tabby-smoke.ts",
+    "smoke:windows-package": "node --import tsx scripts/windows-package-smoke.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.2.0",

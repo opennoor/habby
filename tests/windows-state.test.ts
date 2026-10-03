@@ -10,7 +10,7 @@ import { openStore } from '../packages/hub/src/auth/store.js';
 import { doctor, installHub } from '../packages/hub/src/install.js';
 
 test('native Windows state replaces unsafe explicit ACLs before writing secrets', { skip: process.platform !== 'win32' }, async t => {
-  const parent = await mkdtemp(join(process.env.TABBY_HUB_NATIVE_TEST_ROOT ?? tmpdir(), 'tabby-state-acl-'));
+  const parent = await mkdtemp(join(process.env.TABBY_HUB_NATIVE_TEST_ROOT ?? tmpdir(), 'tabby-state-acl-café-'));
   await privateDirectory(parent);
   const stateDir = join(parent, 'state');
   let preserveForProbe = false;

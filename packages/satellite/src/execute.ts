@@ -33,14 +33,16 @@ export async function execute(category: any, params: any, context: { signal?: Ab
     const wrapper = commandWrapper(params.command, shell);
     const output$ = tab.session?.binaryOutput$ ?? tab.session?.output$;
     if (!output$?.subscribe) throw new HubError('UNSUPPORTED_STREAM', 'Output stream unavailable; use send_input.');
+    const buffer = process.platform === 'win32' && tab.frontend?.xterm?.buffer?.active;
     return await new Promise((resolve, reject) => {
         const capture = new CommandCapture(wrapper.start, wrapper.end);
         const decoder = new StringDecoder('utf8');
         let subscription: Subscription | undefined, destroyed: Subscription | undefined;
+        let screenTimer: ReturnType<typeof setInterval> | undefined;
         let ended = false, responded = false;
         const finish = (result: any, release: boolean) => {
             if (release && !ended) {
-                ended = true; clearTimeout(timer); subscription?.unsubscribe(); destroyed?.unsubscribe();
+                ended = true; clearTimeout(timer); clearInterval(screenTimer); subscription?.unsubscribe(); destroyed?.unsubscribe();
                 context.signal?.removeEventListener('abort', cancelled);
                 category._activeCommands.delete(session.sessionId); category._activeCommandsSubject.next(new Map(category._activeCommands));
             }
@@ -53,10 +55,24 @@ export async function execute(category: any, params: any, context: { signal?: Ab
         category._activeCommandsSubject.next(new Map(category._activeCommands));
         subscription = output$.subscribe({ next: (chunk: string | Buffer) => {
             const result = capture.feed(Buffer.isBuffer(chunk) ? decoder.write(chunk) : chunk);
-            if (result) finish({ ...result, success: result.exitCode === 0 }, true);
+            if (result && !buffer) finish({ ...result, success: result.exitCode === 0 }, true);
         }, complete: () => finish({ success: false, error: 'SESSION_CLOSED', output: capture.partial(), outcomeUnknown: true }, true) });
         destroyed = tab.destroyed?.subscribe(() => finish({ success: false, error: 'SESSION_CLOSED', output: capture.partial(), outcomeUnknown: true }, true));
         context.signal?.addEventListener('abort', cancelled, { once: true });
+        // ConPTY sends screen edits rather than complete lines. Reuse the host's
+        // xterm parser and join soft-wrapped rows before checking the exact nonce.
+        // If bounded host scrollback evicts the start marker, retain unknown outcome.
+        if (buffer && !ended) screenTimer = setInterval(() => {
+            const buffer = tab.frontend?.xterm?.buffer?.active;
+            if (!buffer) return;
+            let text = '';
+            for (let index = 0; index < buffer.length; index++) {
+                const line = buffer.getLine(index);
+                if (line) text += (index && !line.isWrapped ? '\n' : '') + line.translateToString(!buffer.getLine(index + 1)?.isWrapped);
+            }
+            const result = new CommandCapture(wrapper.start, wrapper.end).feed(text + '\n');
+            if (result) finish({ ...result, success: result.exitCode === 0 }, true);
+        }, 50);
         try { session.tab.sendInput(wrapper.text + '\r'); }
         catch (error) { finish({ success: false, error: 'INPUT_FAILED' }, true); reject(error); }
     });

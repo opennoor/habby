@@ -51,7 +51,9 @@ async function main(): Promise<void> {
     const lock = await readFile(lockfile, 'utf8');
     await writeFile(lockfile, lock.replace(/^  packages\/satellite:\r?\n(?: {4}.*\r?\n|\r?\n)*/m, ''));
     // The satellite is already bundled; its host-supplied Tabby/Angular peers are not daemon dependencies.
-    await execute('pnpm', ['--dir', application, '--filter', manifest.name, '--config.node-linker=hoisted', 'install', '--prod', '--frozen-lockfile', '--prefer-offline', '--ignore-scripts'], { env: { ...process.env, CI: 'true' }, maxBuffer: 4 * 1024 * 1024 });
+    // Invoke the current pnpm JS entrypoint: execFile cannot launch Windows .cmd shims.
+    const pnpm = process.env.npm_execpath;
+    await execute(pnpm ? process.execPath : 'pnpm', [...(pnpm ? [pnpm] : []), '--dir', application, '--filter', manifest.name, '--config.node-linker=hoisted', 'install', '--prod', '--frozen-lockfile', '--prefer-offline', '--ignore-scripts'], { env: { ...process.env, CI: 'true' }, maxBuffer: 4 * 1024 * 1024 });
     await rm(path.join(application, 'node_modules/.bin'), { recursive: true, force: true });
     // The release supplies its separately verified Node runtime rather than pnpm's development runtime.
     await rm(path.join(application, 'node_modules/node'), { recursive: true, force: true });
@@ -72,8 +74,8 @@ async function main(): Promise<void> {
       const archive = await download(`${base}/${filename}`);
       if (sha(archive) !== official) throw new Error(`Corrupt runtime download: ${filename}`);
       const archivePath = path.join(staging, filename); await writeFile(archivePath, archive);
-      if (extension === 'zip') await execute('unzip', ['-q', archivePath, '-d', staging]);
-      else await execute('tar', ['-xzf', archivePath, '-C', staging]);
+      if (extension === 'zip' && process.platform !== 'win32') await execute('unzip', ['-q', archivePath, '-d', staging]);
+      else await execute('tar', ['-xf', archivePath, '-C', staging]);
       const bundleName = `tabby-hub-${manifest.version}-${target}`, bundle = path.join(staging, bundleName);
       await cp(application, bundle, { recursive: true }); await mkdir(path.join(bundle, 'runtime/bin'), { recursive: true });
       const binary = target.startsWith('win-') ? 'node.exe' : 'bin/node';

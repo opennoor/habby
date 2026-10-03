@@ -19,6 +19,8 @@ if (process.platform !== 'linux' && !isWindows && !isMac) throw new Error('This 
 if (isWindows && !process.env.TABBY_EXECUTABLE) throw new Error('Set TABBY_EXECUTABLE to the Windows Tabby executable.');
 const waitMs = Number(process.env.TABBY_SMOKE_TIMEOUT_MS ?? 45000);
 assert.ok(Number.isInteger(waitMs) && waitMs >= 10000 && waitMs <= 600000, 'Invalid TABBY_SMOKE_TIMEOUT_MS.');
+const commandMs = Number(process.env.TABBY_SMOKE_COMMAND_TIMEOUT_MS ?? 30000);
+assert.ok(Number.isInteger(commandMs) && commandMs >= 1000 && commandMs <= 300000, 'Invalid TABBY_SMOKE_COMMAND_TIMEOUT_MS.');
 const root = fileURLToPath(new URL('../', import.meta.url));
 const temp = await mkdtemp(join(tmpdir(), 'tabby-hub-gui-'));
 async function freePort() {
@@ -130,12 +132,14 @@ try {
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.trustedPort}/mcp`)));
   assert.equal((await client.listTools()).tools.length, 38);
   const tool = async (name: string, args: Record<string, unknown>) => {
-    const result = await client!.callTool({ name, arguments: args }); assert.notEqual(result.isError, true, JSON.stringify(result));
+    const result = await client!.callTool({ name, arguments: args }, { timeout: commandMs + 30000 }); assert.notEqual(result.isError, true, JSON.stringify(result));
     const value = JSON.parse((result.content as { type: string; text: string }[]).find(item => item.type === 'text')!.text);
     assert.notEqual(value.success, false, JSON.stringify(value)); return value;
   };
   const execute = async (sessionId: string, marker: string) => {
-    const result = await tool('exec_command', { sessionId, command: isWindows ? `Write-Output ${marker}` : `printf ${marker}`, timeout: 30000 });
+    let result;
+    try { result = await tool('exec_command', { sessionId, command: isWindows ? `Write-Output ${marker}` : `printf ${marker}`, timeout: commandMs }); }
+    catch (error) { console.error(JSON.stringify(await tool('get_terminal_buffer', { sessionId }))); throw error; }
     assert.equal(result.success, true); assert.equal(result.exitCode, 0); assert.match(result.output, new RegExp(marker));
   };
   const windows = (await tool('list_windows', {})).windows.filter((window: any) => window.online);
@@ -148,8 +152,14 @@ try {
     sessions.push(opened.sessionId);
     const output = await tool('read_terminal_output', { sessionId: opened.sessionId });
     await execute(opened.sessionId, `TABBY_HUB_WINDOW_${index}`);
-    const streamed = await tool('read_terminal_output', { sessionId: opened.sessionId, cursor: output.cursor });
-    assert.match(Buffer.from(streamed.data, 'base64').toString(), new RegExp(`TABBY_HUB_WINDOW_${index}`));
+    let cursor = output.cursor, streamedText = '';
+    await waitFor(async () => {
+      const streamed = await tool('read_terminal_output', { sessionId: opened.sessionId, cursor });
+      cursor = streamed.cursor;
+      // Windows line editing can emit more than one bounded page before the actual output.
+      streamedText = (streamedText + Buffer.from(streamed.data, 'base64').toString()).slice(-131072);
+      return streamedText.includes(`TABBY_HUB_WINDOW_${index}`);
+    }, `window ${index} streamed command output`);
   }
   const secondTarget = (await targets()).find(item => item.type === 'page' && item.id !== target.id); assert(secondTarget);
   const secondWindow = await debuggerCall(secondTarget.webSocketDebuggerUrl);
@@ -202,12 +212,13 @@ try {
   await waitFor(() => online().length === 0, 'all windows disconnected');
   assert.equal((await client.listTools()).tools.length, 38);
   console.log('PASS: modal keyboard focus and queued-dialog restoration, two real Tabby windows, new tabs, split panes, shell execution, output streaming, and Hub survival.');
-} catch (error) { console.error(stderr); throw error; }
+} catch (error) { console.error(stderr); console.error(error); throw error; }
 finally {
   await client?.close(); for (const socket of sockets) socket.close();
   if (app?.pid) {
     if (isWindows) await promisify(execFile)('taskkill.exe', ['/PID', String(app.pid), '/T', '/F']).catch(() => {});
     else { try { process.kill(-app.pid, 'SIGTERM'); } catch {} await new Promise(resolve => setTimeout(resolve, 500)); try { process.kill(-app.pid, 'SIGKILL'); } catch {} }
   }
-  await hub.close(); await rm(temp, { recursive: true, force: true });
+  // Electron can release Windows profile files shortly after its process exits.
+  await hub.close(); await rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 }

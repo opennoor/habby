@@ -28,12 +28,16 @@ export function defaultPluginDir(platform = process.platform, home = homedir(), 
   if (platform === 'linux') return path.join(env.XDG_CONFIG_HOME ?? path.join(home, '.config'), 'tabby', 'plugins');
   throw new Error(`Unsupported platform: ${platform}`);
 }
-export function renderSupervisor(platform: Platform, executable: string, entrypoint: string, stateDir: string): string {
+export function renderSupervisor(platform: Platform, executable: string, entrypoint: string, stateDir: string, start = true, user?: string): string {
   const args = [entrypoint, 'start', '--state-dir', stateDir];
   if ([executable, ...args].some(s => /[\r\n\0]/.test(s))) throw new Error('Service paths cannot contain line breaks or NUL.');
   if (platform === 'linux') return `[Unit]\nDescription=Tabby Hub MCP\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${[executable, ...args].map(systemdQuote).join(' ')}\nRestart=on-failure\nRestartSec=3\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
   if (platform === 'darwin') return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.tabby-hub.mcp</string><key>ProgramArguments</key><array>${[executable, ...args].map(s => `<string>${xml(s)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer><key>StandardErrorPath</key><string>${xml(path.join(stateDir, 'hub.stderr.log'))}</string></dict></plist>\n`;
-  return `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings><Actions Context="Author"><Exec><Command>${xml(executable)}</Command><Arguments>${xml(args.map(windowsQuote).join(' '))}</Arguments></Exec></Actions></Task>\n`;
+  // RestartOnFailure did not recover an externally killed daemon on native Windows.
+  // Repeating native triggers recover it; IgnoreNew leaves a live instance alone.
+  const repeat = '<Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>';
+  const registration = start ? `<RegistrationTrigger><Enabled>true</Enabled>${repeat}</RegistrationTrigger>` : '';
+  return `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled>${repeat}${user ? `<UserId>${xml(user)}</UserId>` : ''}</LogonTrigger>${registration}</Triggers><Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings><Actions Context="Author"><Exec><Command>${xml(executable)}</Command><Arguments>${xml(args.map(windowsQuote).join(' '))}</Arguments></Exec></Actions></Task>\n`;
 }
 function servicePath(platform: Platform, home: string, stateDir: string, env: NodeJS.ProcessEnv): string {
   return platform === 'linux' ? path.join(env.XDG_CONFIG_HOME ?? path.join(home, '.config'), 'systemd', 'user', `${SERVICE}.service`)
@@ -84,9 +88,11 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
   await writePrivateJson(path.join(config.stateDir, 'installation.json'), { pluginDir });
   const target = servicePath(platform, home, config.stateDir, env);
   await mkdir(path.dirname(target), { recursive: true });
-  const content = renderSupervisor(platform, options.executable ?? process.execPath, options.entrypoint ?? fileURLToPath(new URL('./cli.js', import.meta.url)), config.stateDir);
-  await writePrivateFile(target, platform === 'win32' ? Buffer.from('\uFEFF' + content, 'utf16le') : content);
   const start = options.start !== false;
+  // An all-users logon trigger requires elevation; scope it to the installing account.
+  const user = platform === 'win32' ? `${env.USERDOMAIN}\\${env.USERNAME}` : undefined;
+  const content = renderSupervisor(platform, options.executable ?? process.execPath, options.entrypoint ?? fileURLToPath(new URL('./cli.js', import.meta.url)), config.stateDir, start, user);
+  await writePrivateFile(target, platform === 'win32' ? Buffer.from('\uFEFF' + content, 'utf16le') : content);
   if (platform === 'linux') {
     await exec('systemctl', ['--user', 'daemon-reload']);
     await exec('systemctl', ['--user', 'enable', `${SERVICE}.service`]);
@@ -179,6 +185,7 @@ export async function doctor(config: HubConfig): Promise<Array<{ name: string; o
   let privatePaths: Record<string, boolean> = {};
   if (process.platform === 'win32') {
     const script = `$ErrorActionPreference='Stop'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
+      [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
       $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $result=@{}
       foreach($path in (ConvertFrom-Json $env:TABBY_HUB_DOCTOR_PATHS)) {
         $ok=$false

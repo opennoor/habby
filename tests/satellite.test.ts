@@ -228,7 +228,8 @@ test('POSIX wrapper runs real shell command and captures native exit status', { 
 test('PowerShell wrapper executes in native pwsh when installed', t => {
     try { execFileSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'], { stdio: 'pipe' }); }
     catch { t.skip('pwsh runtime unavailable on this host'); return; }
-    const wrapper = commandWrapper(`Write-Output 'it''s café'; & '${process.execPath.replaceAll("'", "''")}' -e 'process.exit(7)'`, 'powershell');
+    const wrapper = commandWrapper(`Write-Output 'it''s café'\n& '${process.execPath.replaceAll("'", "''")}' -e 'process.exit(7)'`, 'powershell');
+    assert.doesNotMatch(wrapper.text, /[\r\n]/, 'Interactive PowerShell must receive one physical input line.');
     const stream = execFileSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', wrapper.text], { encoding: 'utf8' });
     const result = new CommandCapture(wrapper.start, wrapper.end).feed(stream);
     assert.equal(result?.exitCode, 7);
@@ -408,6 +409,36 @@ test('production execution releases an unknown CMD outcome and permits the next 
         assert.equal(host.terminal._activeCommands.size, 0);
     } finally { binary.complete(); terminal.destroyed.complete(); }
 });
+test('Windows ConPTY completion uses rendered wrapped markers and releases the pane', { skip: process.platform !== 'win32' }, async () => {
+    const host = hostCategories(), terminal: any = new host.Terminal(), binary = new Subject<Buffer>();
+    terminal.profile = { name: 'powershell' }; terminal.session = { open: true, binaryOutput$: binary };
+    terminal.destroyed = new Subject<void>();
+    let lines: Array<{ text: string; isWrapped: boolean }> = [];
+    let commands = 0;
+    terminal.frontend = { xterm: { buffer: { active: { get length() { return lines.length; },
+        getLine: (index: number) => lines[index] && { isWrapped: lines[index].isWrapped, translateToString: () => lines[index].text } } } } };
+    terminal.sendInput = (input: string) => {
+        const head = /(__TABBY_[a-f0-9]+_)/.exec(input)![1];
+        const start = head + 'START__', end = head + 'END__';
+        lines = [{ text: start, isWrapped: false }, { text: 'hello café', isWrapped: false },
+            { text: end.slice(0, 20), isWrapped: false }, { text: end.slice(20) + ':0', isWrapped: true }];
+        // ConPTY sends screen edits, so the raw byte stream need not repeat the whole marker.
+        binary.next(Buffer.from(++commands === 1 ? `${start}\r\nhello café\r\n\x1b[20C${end.slice(20)}:0\r\n`
+            : `${start}\r\nPSReadLine redraw instead of command output\r\n${end}:0\r\n`));
+    };
+    host.app.tabs = [terminal]; (host.app as any).selectTab = () => {};
+    (host.terminal as any).getTerminalBufferText = () => '';
+    (host.terminal as any).parseEnvironmentFromBuffer = () => ({ isShell: true, environment: 'powershell', promptClean: 'PS>' });
+    const id = host.terminal.getOrCreateSessionId(terminal);
+    try {
+        const result = JSON.parse((await execute(host.terminal, { sessionId: id, command: 'Write-Output hello', timeout: 1000 }) as any).content[0].text);
+        assert.equal(result.success, true); assert.equal(result.exitCode, 0); assert.equal(result.output, 'hello café');
+        const next = JSON.parse((await execute(host.terminal, { sessionId: id, command: 'Write-Output again', timeout: 1000 }) as any).content[0].text);
+        assert.equal(next.success, true); assert.equal(next.output, 'hello café');
+        assert.equal(host.terminal._activeCommands.size, 0); assert.equal(binary.observed, false);
+    } finally { binary.complete(); terminal.destroyed.complete(); }
+});
+
 test('monitored execution rejects a second command and retains timed-out ownership until actual completion', { skip: process.platform === 'win32' }, async () => {
     const host = hostCategories();
     const terminal: any = new host.Terminal(); terminal.profile = { name: 'bash' }; terminal.hasFocus = true;

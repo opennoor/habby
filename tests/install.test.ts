@@ -19,6 +19,13 @@ test('all supervisor definitions quote paths and enforce restart/session limits'
   const windows = renderSupervisor('win32', 'C:\\Program Files\\node.exe', 'C:\\app\\cli.js', 'C:\\state');
   assert.match(windows, /<ExecutionTimeLimit>PT0S/); assert.match(windows, /<StopIfGoingOnBatteries>false/); assert.match(windows, /InteractiveToken/);
   assert.match(windows, /RestartOnFailure/); assert.throws(() => renderSupervisor('linux', '/bad\nnode', '/entry', '/state'));
+  assert.match(windows, /<LogonTrigger>.*<Repetition><Interval>PT1M/);
+  assert.match(windows, /<RegistrationTrigger>.*<Repetition><Interval>PT1M/);
+  assert.match(windows, /<MultipleInstancesPolicy>IgnoreNew/);
+  const deferred = renderSupervisor('win32', 'node.exe', 'cli.js', 'state', false, 'MACHINE\\user&name');
+  assert.doesNotMatch(deferred, /RegistrationTrigger/);
+  assert.match(deferred, /<LogonTrigger>.*<Repetition><Interval>PT1M/);
+  assert.match(deferred, /<UserId>MACHINE\\user&amp;name<\/UserId><\/LogonTrigger>/);
   assert.equal(defaultPluginDir('linux', '/home/user', { XDG_CONFIG_HOME: '/custom' }), path.join('/custom', 'tabby', 'plugins'));
   assert.equal(defaultPluginDir('darwin', '/home/user', {}), path.join('/home/user', 'Library', 'Application Support', 'tabby', 'plugins'));
   assert.equal(defaultPluginDir('win32', '/home/user', { APPDATA: '/roaming' }), path.join('/roaming', 'tabby', 'plugins'));
@@ -404,6 +411,14 @@ test('Windows native test runner retains pre-existing users and fixture director
       throw 'Cleanup removed an account this run did not create'
     }
     $root=Join-Path $env:PUBLIC 'tabby-hub-ci-tests'
+    if(Test-Path -LiteralPath $root) { throw 'Failed setup left its fixture directory behind' }
+    $created.Clear(); $removed.Clear()
+    function New-LocalUser { param($Name,$Password) throw 'Owner already exists' }
+    try { & ${quote(runner)}; throw 'Expected owner setup failure' }
+    catch { if($_.Exception.Message -ne 'Owner already exists') { throw } }
+    if($created.Count -or $removed.Count -or (Test-Path -LiteralPath $root)) {
+      throw 'Owner setup failure changed an existing account or leaked its fixture'
+    }
     New-Item -ItemType Directory -Path $root | Out-Null
     Set-Content -LiteralPath (Join-Path $root 'keep.txt') -Value 'retain'
     $created.Clear(); $removed.Clear()
