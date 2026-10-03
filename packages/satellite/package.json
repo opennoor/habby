@@ -1,0 +1,14 @@
+{
+  "name": "tabby-hub-satellite",
+  "version": "1.0.0",
+  "author": "Roy Gh",
+  "description": "Window satellite for Tabby Hub MCP",
+  "main": "dist/index.js",
+  "license": "MIT",
+  "keywords": ["tabby-plugin"],
+  "files": ["dist", "package.json"],
+  "scripts": { "build": "webpack --config webpack.config.mjs", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "dependencies": { "zod": "3.25.76", "ws": "^8.18.3", "strip-ansi": "^7.1.0", "@xterm/addon-serialize": "^0.12.0" },
+  "peerDependencies": { "tabby-core": "^1.0.163", "tabby-settings": "^1.0.163", "tabby-terminal": "^1.0.163", "tabby-ssh": "^1.0.163", "@angular/core": "^17.3.12", "@angular/common": "^17.3.12", "@angular/forms": "^17.3.12", "rxjs": "^7.8.2" },
+  "peerDependenciesMeta": { "tabby-ssh": { "optional": true } }
+}

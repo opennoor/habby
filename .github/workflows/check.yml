@@ -1,0 +1,31 @@
+name: Check
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - name: Check native state permissions as a Windows standard user
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: powershell
+        run: .\scripts\windows-native-tests.ps1
+      - name: Check installer syntax
+        if: runner.os != 'Windows'
+        run: sh -n scripts/install.sh

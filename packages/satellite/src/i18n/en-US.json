@@ -1,0 +1,8 @@
+{
+  "mcp.dialog.command.title": "MCP Command Confirmation",
+  "mcp.dialog.operation.title": "MCP Operation Confirmation",
+  "mcp.dialog.tab": "Terminal tab",
+  "mcp.dialog.approve": "Approve",
+  "mcp.dialog.reject": "Reject",
+  "mcp.dialog.autoReject": "Automatically rejects in {seconds} seconds"
+}
