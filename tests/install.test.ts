@@ -36,27 +36,30 @@ test('installation, upgrade and uninstall preserve other plugins and private sta
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const source = path.join(tmp, 'source'), stateDir = path.join(tmp, 'state'), pluginDir = path.join(tmp, 'plugins');
   await mkdir(path.join(source, 'dist'), { recursive: true }); await mkdir(stateDir);
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite', main: 'dist/index.js' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-habby', main: 'dist/index.js' }));
   await writeFile(path.join(source, 'dist', 'index.js'), 'version1');
   await writeFile(path.join(stateDir, 'satellite.json'), '{}', { mode: 0o600 });
   await mkdir(path.join(pluginDir, 'node_modules', 'unrelated'), { recursive: true });
   await writeFile(path.join(pluginDir, 'node_modules', 'unrelated', 'keep'), 'keep');
+  const legacy = path.join(pluginDir, 'node_modules', 'habby-satellite');
+  await mkdir(legacy); await writeFile(path.join(legacy, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
   const calls: Array<[string, string[]]> = [];
   const options = { config: { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 }, platform: 'linux' as const, home: tmp, env: {}, pluginDir, pluginSource: source, executable: '/bundle/node', entrypoint: '/bundle/cli.js', exec: async (file: string, args: string[]) => { calls.push([file, args]); } };
   const installed = await installHub(options);
   assert.equal(installed.started, true);
-  assert.equal(await readFile(path.join(pluginDir, 'node_modules', 'habby-satellite', 'dist', 'index.js'), 'utf8'), 'version1');
-  assert.deepEqual(JSON.parse(await readFile(path.join(pluginDir, 'node_modules', 'habby-satellite', 'hub-state.json'), 'utf8')), { stateDir });
+  assert.equal(await readFile(path.join(pluginDir, 'node_modules', 'tabby-habby', 'dist', 'index.js'), 'utf8'), 'version1');
+  await assert.rejects(access(legacy));
+  assert.deepEqual(JSON.parse(await readFile(path.join(pluginDir, 'node_modules', 'tabby-habby', 'hub-state.json'), 'utf8')), { stateDir });
   if (process.platform !== 'win32') assert.equal((await stat(installed.servicePath)).mode & 0o077, 0);
   assert.deepEqual(calls[2], ['systemctl', ['--user', 'restart', 'habby.service']]);
   await writeFile(path.join(source, 'dist', 'index.js'), 'version2');
   await installHub({ ...options, start: false });
-  assert.equal(await readFile(path.join(pluginDir, 'node_modules', 'habby-satellite', 'dist', 'index.js'), 'utf8'), 'version2');
+  assert.equal(await readFile(path.join(pluginDir, 'node_modules', 'tabby-habby', 'dist', 'index.js'), 'utf8'), 'version2');
   const { pluginDir: _customDir, ...uninstallOptions } = options;
   await uninstallHub(options.config, uninstallOptions);
   await access(path.join(stateDir, 'satellite.json')); await access(path.join(pluginDir, 'node_modules', 'unrelated', 'keep'));
   await assert.rejects(access(installed.servicePath));
-  await assert.rejects(access(path.join(pluginDir, 'node_modules', 'habby-satellite')));
+  await assert.rejects(access(path.join(pluginDir, 'node_modules', 'tabby-habby')));
   await uninstallHub(options.config, options);
 });
 
@@ -64,7 +67,7 @@ test('a supervisor failure is surfaced and does not claim a successful installat
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-install-failure-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const source = path.join(tmp, 'source'); await mkdir(path.join(source, 'dist'), { recursive: true });
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-habby' }));
   await writeFile(path.join(source, 'dist', 'index.js'), 'plugin'); await writeFile(path.join(tmp, 'satellite.json'), '{}');
   await assert.rejects(installHub({ config: { stateDir: tmp, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 }, pluginSource: source, home: tmp, env: {}, platform: 'linux', exec: async () => { throw new Error('user systemd unavailable'); } }), /user systemd unavailable/);
 });
@@ -165,7 +168,7 @@ test('Unix supervisor upgrades repair existing writable units and plists', { ski
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-supervisor-upgrade-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const source = path.join(tmp, 'source'); await mkdir(path.join(source, 'dist'), { recursive: true });
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-habby' }));
   await writeFile(path.join(source, 'dist', 'index.js'), 'plugin');
   const stateDir = path.join(tmp, 'state'); await mkdir(stateDir);
   await writeFile(path.join(stateDir, 'satellite.json'), '{}', { mode: 0o600 });
@@ -218,7 +221,7 @@ test('Unix installer replaces private control records and supervisor links witho
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-control-upgrade-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const source = path.join(tmp, 'source'); await mkdir(path.join(source, 'dist'), { recursive: true });
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-habby' }));
   await writeFile(path.join(source, 'dist', 'index.js'), 'plugin');
   const stateDir = path.join(tmp, 'state'); await mkdir(stateDir); await writeFile(path.join(stateDir, 'satellite.json'), '{}');
   const options = { config: { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 }, platform: 'linux' as const,
@@ -241,9 +244,9 @@ test('uninstall stops and deregisters missing definitions before removing plugin
       const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-uninstall-'));
       t.after(() => rm(home, { recursive: true, force: true }));
       const stateDir = path.join(home, 'state'), pluginDir = path.join(home, 'plugins');
-      const destination = path.join(pluginDir, 'node_modules', 'habby-satellite');
+      const destination = path.join(pluginDir, 'node_modules', 'tabby-habby');
       await mkdir(destination, { recursive: true }); await mkdir(stateDir);
-      await writeFile(path.join(destination, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
+      await writeFile(path.join(destination, 'package.json'), JSON.stringify({ name: 'tabby-habby' }));
       await writeFile(path.join(stateDir, 'secrets.json'), 'retain on failure');
       const calls: Array<[string, string[]]> = [];
       const options = { platform, home, pluginDir, env: { USERNAME: 'fixture' }, purge: true,
@@ -308,7 +311,7 @@ test('macOS upgrade retries transient bootstrap failure and surfaces supervisor 
   t.after(() => rm(home, { recursive: true, force: true }));
   const source = path.join(home, 'source'), stateDir = path.join(home, 'state');
   await mkdir(path.join(source, 'dist'), { recursive: true }); await mkdir(stateDir);
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-habby' }));
   await writeFile(path.join(source, 'dist/index.js'), 'plugin');
   await writeFile(path.join(stateDir, 'satellite.json'), '{}', { mode: 0o600 });
   const options = { config: { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 },

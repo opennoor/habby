@@ -37,13 +37,14 @@ async function waitFor<T>(check: () => T | Promise<T>, label: string): Promise<N
   throw new Error(`Timed out: ${label}`);
 }
 const config = { stateDir: join(temp, 'state'), trustedPort: await freePort(), satellitePort: await freePort(), publicPort: await freePort() };
-const hub = await startHub(config);
+let startApp: () => Promise<void>;
+const hub = await startHub(config, { launchWindow: () => startApp() });
 let app: ReturnType<typeof spawn> | undefined;
 let client: Client | undefined;
 let stderr = '';
 const sockets: WebSocket[] = [];
 try {
-  const data = join(temp, 'electron'); const plugin = join(data, 'plugins/node_modules/habby-satellite');
+  const data = join(temp, 'electron'); const plugin = join(data, 'plugins/node_modules/tabby-habby');
   await mkdir(plugin, { recursive: true });
   await cp(join(root, 'packages/satellite/dist'), join(plugin, 'dist'), { recursive: true });
   await cp(join(root, 'packages/satellite/package.json'), join(plugin, 'package.json'));
@@ -52,12 +53,25 @@ try {
   const debugPort = await freePort();
   const executable = process.env.TABBY_EXECUTABLE ?? (isMac ? '/Applications/Tabby.app/Contents/MacOS/Tabby' : '/opt/Tabby/tabby');
   const appArgs = ['--no-sandbox', `--user-data-dir=${data}`, `--remote-debugging-port=${debugPort}`, '--disable-gpu'];
-  app = spawn(isWindows || isMac ? executable : 'xvfb-run', isWindows || isMac ? appArgs : ['-a', executable, ...appArgs], {
-    env: { ...process.env, TABBY_CONFIG_DIRECTORY: data, TABBY_PLUGINS: '', NODE_PATH: '' },
-    detached: true, stdio: ['ignore', 'ignore', 'pipe'],
-  });
-  app.on('error', error => { stderr += error.message; });
-  app.stderr!.on('data', chunk => { stderr = (stderr + chunk).slice(-12000); });
+  startApp = async () => {
+    app = spawn(isWindows || isMac ? executable : 'xvfb-run', isWindows || isMac ? appArgs : ['-a', executable, ...appArgs], {
+      env: { ...process.env, TABBY_CONFIG_DIRECTORY: data, TABBY_PLUGINS: '', NODE_PATH: '' },
+      detached: true, stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    app.on('error', error => { stderr += error.message; });
+    app.stderr!.on('data', chunk => { stderr = (stderr + chunk).slice(-12000); });
+    await once(app, 'spawn');
+  };
+  client = new Client({ name: 'real-Tabby-smoke', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.trustedPort}/mcp`)));
+  assert.equal((await client.listTools()).tools.length, 39);
+  const tool = async (name: string, args: Record<string, unknown>) => {
+    const result = await client!.callTool({ name, arguments: args }, { timeout: commandMs + 30000 }); assert.notEqual(result.isError, true, JSON.stringify(result));
+    const value = JSON.parse((result.content as { type: string; text: string }[]).find(item => item.type === 'text')!.text);
+    assert.notEqual(value.success, false, JSON.stringify(value)); return value;
+  };
+  const firstCreated = await tool('habby.new_window', {});
+  assert.equal(firstCreated.online, true);
   const targets = async (): Promise<{ id: string; type: string; webSocketDebuggerUrl: string }[]> =>
     fetch(`http://127.0.0.1:${debugPort}/json/list`).then(response => response.json()).catch(() => []);
   const target = await waitFor(async () => (await targets()).find(item => item.type === 'page'), 'Tabby startup');
@@ -82,8 +96,14 @@ try {
     };
   }
   const firstWindow = await debuggerCall(target.webSocketDebuggerUrl);
+  const listedPlugin = await firstWindow(`(() => {
+    const injector = require('@angular/core').getDebugNode(document.querySelector('app-root')).injector;
+    return injector.get(require('tabby-core').BOOTSTRAP_DATA).installedPlugins.some(plugin => plugin.packageName === 'tabby-habby' && plugin.name === 'habby');
+  })()`);
+  assert.equal(listedPlugin, true, 'Habby must appear in Tabby installed plugins.');
   const online = () => (hub.registry.list(LOCAL_PRINCIPAL) as any[]).filter(window => window.online);
   await waitFor(() => online().length === 1, 'first satellite');
+  assert.equal(online()[0].windowId, firstCreated.windowId);
   const focusSequence = await firstWindow(`(() => {
     const module = require(${JSON.stringify(plugin)}).default;
     const Dialog = module.ɵinj.providers.find(provider => provider.prototype?.showOperationConfirmation);
@@ -126,16 +146,10 @@ try {
   assert.deepEqual(await firstWindow("window.__queuedModalResults"), [true, false]);
   assert.equal(await firstWindow("document.querySelectorAll('.mcp-dialog-overlay').length"), 0);
   await firstWindow("document.getElementById('modal-focus-test').remove(); delete window.__modalFocusService; delete window.__queuedModalResults; delete window.__queuedModalTimerPassed;true");
-  await firstWindow("require('electron').ipcRenderer.send('app:new-window')");
+  const created = await tool('habby.new_window', {});
+  assert.equal(created.online, true);
   await waitFor(() => online().length === 2, 'second satellite');
-  client = new Client({ name: 'real-Tabby-smoke', version: '1' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.trustedPort}/mcp`)));
-  assert.equal((await client.listTools()).tools.length, 38);
-  const tool = async (name: string, args: Record<string, unknown>) => {
-    const result = await client!.callTool({ name, arguments: args }, { timeout: commandMs + 30000 }); assert.notEqual(result.isError, true, JSON.stringify(result));
-    const value = JSON.parse((result.content as { type: string; text: string }[]).find(item => item.type === 'text')!.text);
-    assert.notEqual(value.success, false, JSON.stringify(value)); return value;
-  };
+  assert(online().some(window => window.windowId === created.windowId));
   const execute = async (sessionId: string, marker: string) => {
     let result;
     try { result = await tool('exec_command', { sessionId, command: isWindows ? `Write-Output ${marker}` : `printf ${marker}`, timeout: commandMs }); }
@@ -210,8 +224,8 @@ try {
   await execute(panes[1].id, 'HABBY_SURVIVES');
   await secondWindow("setTimeout(()=>require('@electron/remote').getCurrentWindow().destroy(),50);true");
   await waitFor(() => online().length === 0, 'all windows disconnected');
-  assert.equal((await client.listTools()).tools.length, 38);
-  console.log('PASS: modal keyboard focus and queued-dialog restoration, two real Tabby windows, new tabs, split panes, shell execution, output streaming, and Hub survival.');
+  assert.equal((await client.listTools()).tools.length, 39);
+  console.log('PASS: installed plugin discovery, cold-start and second-window tools, modal focus, tabs, panes, shell execution, output streaming, and Hub survival.');
 } catch (error) { console.error(stderr); console.error(error); throw error; }
 finally {
   await client?.close(); for (const socket of sockets) socket.close();

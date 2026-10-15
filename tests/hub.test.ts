@@ -46,6 +46,30 @@ async function satellite(trust: SatelliteTrust, windowId: string) {
   return ws;
 }
 
+test('new_window launches Tabby with zero connected windows and returns a routable ID', async t => {
+  const config = await temporaryConfig();
+  const createdId = randomUUID();
+  let peer: WebSocket | undefined;
+  let launches = 0;
+  const hub = await startHub(config, { launchWindow: async () => {
+    launches++;
+    const trust: SatelliteTrust = JSON.parse(await readFile(join(config.stateDir, 'satellite.json'), 'utf8'));
+    peer = await satellite(trust, createdId);
+  } });
+  t.after(async () => { peer?.terminate(); await hub.close(); await rm(config.stateDir, { recursive: true, force: true }); });
+  const client = new Client({ name: 'new-window-test', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.trustedPort}/mcp`)));
+  t.after(() => client.close());
+  assert.deepEqual(hub.registry.onlineIds(), []);
+  const opened = await client.callTool({ name: 'habby.new_window', arguments: {} });
+  assert.equal(opened.isError, undefined);
+  assert.match(JSON.stringify(opened), new RegExp(createdId));
+  assert.equal(launches, 1);
+  const routed = await client.callTool({ name: 'select_tab', arguments: { windowId: createdId } });
+  assert.equal(routed.isError, undefined);
+  assert.match(JSON.stringify(routed), new RegExp(createdId));
+});
+
 test('real MCP over HTTP routes two authenticated WSS satellites independently', async t => {
   const config = await temporaryConfig();
   const hub = await startHub(config);
@@ -59,7 +83,7 @@ test('real MCP over HTTP routes two authenticated WSS satellites independently',
   const client = new Client({ name: 'Hub integration test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.trustedPort}/mcp`)));
   t.after(() => client.close());
-  assert.equal((await client.listTools()).tools.length, 38);
+  assert.equal((await client.listTools()).tools.length, 39);
   const inventory = await client.callTool({ name: 'list_windows', arguments: {} });
   const inventoryText = JSON.stringify(inventory);
   for (const windowId of windows) assert.match(inventoryText, new RegExp(windowId));

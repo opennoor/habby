@@ -10,6 +10,7 @@ import type { PublicAuth, PublicAuthFactory } from '../../../shared/auth-contrac
 import { equalSecret, textResult, WindowRegistry } from './registry.js';
 import { initializeState, validatePublicUrl, writePrivateJson } from './state.js';
 import { join } from 'node:path';
+import { launchTabby } from './window-launcher.js';
 
 export interface HubHandle {
   config: HubConfig;
@@ -17,9 +18,10 @@ export interface HubHandle {
   close(): Promise<void>;
 }
 
-export async function startHub(config: HubConfig, options: { authFactory?: PublicAuthFactory } = {}): Promise<HubHandle> {
+export async function startHub(config: HubConfig, options: { authFactory?: PublicAuthFactory; launchWindow?: () => Promise<void> } = {}): Promise<HubHandle> {
   const state = await initializeState(config.stateDir, config);
   const registry = new WindowRegistry();
+  let windowOpening = Promise.resolve();
   let publicAuth: PublicAuth | undefined;
   let publicServer: Server | undefined;
   let publicHandler: ReturnType<typeof createMcpHandler> | undefined;
@@ -34,7 +36,7 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
     const handler = createMcpHandler(context => {
       const principal = publicAccess ? context.authInfo?.extra?.principal as Principal : LOCAL_PRINCIPAL;
       if (!principal) throw new HubError('UNAUTHORIZED', 'Public MCP requires a verified token.');
-      const server = new McpServer({ name: 'Habby', version: '1.1.0' });
+      const server = new McpServer({ name: 'Habby', version: '1.2.0' });
       for (const tool of TOOLS) {
         try { authorize(principal, tool.name); } catch { continue; }
         server.registerTool(tool.name, { description: tool.description, inputSchema: tool.schema,
@@ -43,7 +45,9 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
           try {
             if (publicAccess && (!publicAuth || !await publicAuth.isAuthorized(principal)))
               throw new HubError('UNAUTHORIZED', 'Agent grant is expired or revoked.');
-            const result = await registry.call(tool.name, params as Record<string, unknown>, principal, context.mcpReq.signal);
+            const result = tool.name === 'habby.new_window'
+              ? await openWindow(principal, params as Record<string, unknown>, context.mcpReq.signal)
+              : await registry.call(tool.name, params as Record<string, unknown>, principal, context.mcpReq.signal);
             if (!isCallToolResult(result)) throw new HubError('INVALID_RESULT', 'Satellite returned an invalid MCP tool result.');
             return result;
           } catch (error) {
@@ -64,9 +68,39 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
   track(trustedServer);
   async function routeTrusted(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!trustedRequest(req, config)) return json(res, 403, { error: 'Untrusted Host or browser Origin.' });
-    if (req.url === '/health' && req.method === 'GET') return json(res, 200, { name: 'Habby', version: '1.1.0', alive: true });
+    if (req.url === '/health' && req.method === 'GET') return json(res, 200, { name: 'Habby', version: '1.2.0', alive: true });
     if (req.url !== '/mcp') return json(res, 404, { error: 'Not found.' });
     await trustedNode(req, res);
+  }
+
+  async function openWindow(principal: Principal, input: Record<string, unknown>, signal: AbortSignal): Promise<ReturnType<typeof textResult>> {
+    const params = TOOLS.find(tool => tool.name === 'habby.new_window')!.schema.parse(input) as { windowId?: string };
+    authorize(principal, 'habby.new_window', params);
+    const previous = windowOpening;
+    let release!: () => void;
+    windowOpening = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try {
+      if (signal.aborted) throw new HubError('CANCELLED', 'Request was cancelled.');
+      const before = new Set(registry.onlineIds());
+      if (params.windowId && !before.has(params.windowId)) throw new HubError('WINDOW_OFFLINE', 'Source window is offline.');
+      return await new Promise((resolve, reject) => {
+        const cleanup = () => { clearTimeout(timer); registry.off('topology', onTopology); signal.removeEventListener('abort', onAbort); };
+        const onTopology = () => {
+          const id = registry.onlineIds().find(id => !before.has(id));
+          if (id) { cleanup(); resolve(textResult({ windowId: id, online: true })); }
+        };
+        const onAbort = () => { cleanup(); reject(new HubError('CANCELLED', 'Request was cancelled.')); };
+        const timer = setTimeout(() => { cleanup(); reject(new HubError('WINDOW_START_TIMEOUT',
+          'Tabby did not register a new Habby window within 45 seconds. Check that the tabby-habby plugin is installed and restart Tabby.')); }, 45000);
+        registry.on('topology', onTopology);
+        signal.addEventListener('abort', onAbort, { once: true });
+        void (async () => {
+          if (before.size) await registry.call('habby.new_window', { windowId: params.windowId ?? [...before][0] }, principal, signal);
+          else await (options.launchWindow ?? launchTabby)();
+        })().catch(error => { cleanup(); reject(error); });
+      });
+    } finally { release(); }
   }
 
   const secureServer = createSecureServer({ key: state.privateKey, cert: state.trust.certificate, minVersion: 'TLSv1.2' },

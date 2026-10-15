@@ -40,8 +40,8 @@ async function waitFor<T>(check: () => Promise<T>, label: string, timeout = 3000
   }
   throw new Error(`Timed out: ${label}`);
 }
-const bundleName = 'habby-1.1.0-win-x64';
-const bundle = join(local, 'Habby', 'versions', '1.1.0-win-x64');
+const bundleName = 'habby-1.2.0-win-x64';
+const bundle = join(local, 'Habby', 'versions', '1.2.0-win-x64');
 let runtime = join(bundle, 'runtime', 'node.exe'), cli = join(bundle, 'dist', 'packages', 'hub', 'src', 'cli.js');
 const run = (...args: string[]) => execute(runtime, [cli, ...args, '--state-dir', stateDir], { env, windowsHide: true, timeout: 120000 });
 try {
@@ -52,7 +52,7 @@ try {
   await mkdir(join(pluginDir, 'node_modules', 'unrelated'), { recursive: true });
   await writeFile(join(pluginDir, 'node_modules', 'unrelated', 'keep'), 'retain');
   const installer = resolve('scripts/install.ps1');
-  const install = (directory: string) => ps(`& ${psQuote(installer)} -Version 1.1.0 -ArchiveDir ${psQuote(directory)} -PluginDir ${psQuote(pluginDir)}`, env);
+  const install = (directory: string) => ps(`& ${psQuote(installer)} -Version 1.2.0 -ArchiveDir ${psQuote(directory)} -PluginDir ${psQuote(pluginDir)}`, env);
   const bad = join(root, 'bad-checksum'); await mkdir(bad);
   await cp(join(releaseDir, `${bundleName}.tar.gz`), join(bad, `${bundleName}.tar.gz`));
   await writeFile(join(bad, 'SHA256SUMS'), `${'0'.repeat(64)}  ${bundleName}.tar.gz\n`);
@@ -69,7 +69,7 @@ try {
   assert.ok(JSON.parse((await run('doctor')).stdout).every((check: any) => check.ok));
   client = new Client({ name: 'windows-package-acceptance', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${state.config.trustedPort}/mcp`)));
-  assert.equal((await client.listTools()).tools.length, 38);
+  assert.equal((await client.listTools()).tools.length, 39);
   const windows = await client.callTool({ name: 'list_windows', arguments: {} });
   assert.deepEqual(JSON.parse((windows.content as Array<{ text: string }>)[0].text).windows, []);
   assert.equal((await fetch(`http://127.0.0.1:${state.config.publicPort}/mcp`)).status, 401);
@@ -92,7 +92,7 @@ try {
   await waitFor(async () => !await health(), 'daemon shutdown');
   assert.equal(await readFile(join(stateDir, 'secrets.json'), 'utf8'), secrets);
   await access(join(pluginDir, 'node_modules', 'unrelated', 'keep'));
-  await assert.rejects(access(join(pluginDir, 'node_modules', 'habby-satellite')));
+  await assert.rejects(access(join(pluginDir, 'node_modules', 'tabby-habby')));
   await run('uninstall');
   taskOwned = true; await run('install', '--no-start', '--plugin-dir', pluginDir);
   assert.equal(await health(), false);

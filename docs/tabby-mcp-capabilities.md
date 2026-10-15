@@ -1,5 +1,7 @@
 # Tabby-MCP capability inventory
 
+Update checked 2026-10-15: [upstream v1.7.2](https://github.com/GentlemanHu/Tabby-MCP/releases/tag/v1.7.2) adds a configurable listen address and an in-settings plugin updater. The [source diff from v1.7.1](https://github.com/GentlemanHu/Tabby-MCP/compare/86a52fdfadb724959929f052c1fc89a45c9f1b0f...5583f3c) contains no tool handler or schema changes. Habby keeps its local port 4040 and separate release installer, so no upstream behavior needs porting for this version.
+
 Inspected on 2026-10-02: [GentlemanHu/Tabby-MCP](https://github.com/GentlemanHu/Tabby-MCP/tree/86a52fdfadb724959929f052c1fc89a45c9f1b0f), commit `86a52fdfadb724959929f052c1fc89a45c9f1b0f`, package version **1.7.1**. This inventory describes the inspected source, rather than assuming every README statement is implemented. All source links below are pinned to that commit.
 
 ## Inventory boundary and tool counts

@@ -26,6 +26,8 @@ export class WindowRegistry extends EventEmitter {
     }
   }, 10000).unref();
 
+  onlineIds(): string[] { return [...this.windows.values()].filter(window => window.online).map(window => window.id); }
+
   register(registration: Registration, send: (message: WireMessage) => void): { epoch: string; resumeToken: string } {
     const existing = this.windows.get(registration.windowId);
     if (existing?.online) throw new HubError('DUPLICATE_WINDOW', 'This window already has a live satellite.');

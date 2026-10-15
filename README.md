@@ -4,7 +4,7 @@ One MCP endpoint for all your Tabby windows. A standalone Node daemon routes
 requests to a satellite plugin in each window, preserving its tabs, panes,
 profiles, terminals and SFTP sessions.
 
-[Download v1.1.0](https://github.com/Sojaner/habby/releases/tag/v1.1.0)
+[Download v1.2.0](https://github.com/Sojaner/habby/releases/tag/v1.2.0)
 for bundled Node runtimes, the Hub and the satellite plugin. See the
 [installation instructions](docs/installation.md) and [previous release validation](docs/validation-1.0.0.md).
 
@@ -22,8 +22,9 @@ Restart Tabby windows after installation. Connect an HTTP MCP client to
 `http://127.0.0.1:4040/mcp`, or use `habby bridge` for a stdio client.
 Run `pnpm exec node dist/packages/hub/src/cli.js --help` for the source CLI.
 
-The Hub exposes all **36 upstream tools**, plus `list_windows` and bounded
-`read_terminal_output`. Target IDs include their owning window; ambiguous
+The Hub exposes all **36 upstream tools**, plus `list_windows`, bounded
+`read_terminal_output`, and `habby.new_window`. The new-window tool starts Tabby
+when needed and returns a window ID for subsequent calls. Target IDs include their owning window; ambiguous
 requests fail instead of selecting another window. The Hub remains available
 when Tabby is closed, with no connected terminal sessions.
 

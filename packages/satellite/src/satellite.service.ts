@@ -1,5 +1,5 @@
 import { Injectable, Inject, OnDestroy, NgZone } from '@angular/core';
-import { AppService, BOOTSTRAP_DATA, ConfigService, type BootstrapData } from 'tabby-core';
+import { AppService, BOOTSTRAP_DATA, ConfigService, HostAppService, type BootstrapData } from 'tabby-core';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Subscription } from 'rxjs';
@@ -23,12 +23,12 @@ export class SatelliteService implements SatelliteAdapter, OnDestroy {
     private output = new OutputRings();
     private streams = new Map<string, { source: unknown; subscription: Subscription; destroyed?: Subscription }>();
     private tools;
-    constructor(private app: AppService, private config: ConfigService, private zone: NgZone,
+    constructor(private app: AppService, private config: ConfigService, private zone: NgZone, private hostApp: HostAppService,
         private terminal: TerminalToolCategory, private tabs: TabManagementToolCategory, private sftp: SFTPToolCategory,
         @Inject(BOOTSTRAP_DATA) private bootstrap: BootstrapData) {
         this.tools = new Map([...terminal.mcpTools, ...tabs.mcpTools, ...sftp.mcpTools].map(tool => [tool.name, tool]));
         this.client = new SatelliteClient(() => JSON.parse(readFileSync(join(this.stateDir(), 'satellite.json'), 'utf8')) as SatelliteTrust,
-            this, { nativeWindowId: bootstrap.windowID, platform: process.platform, pluginVersion: '1.1.0' });
+            this, { nativeWindowId: bootstrap.windowID, platform: process.platform, pluginVersion: '1.2.0' });
     }
     private stateDir() {
         if (this.config.store.hubSatellite?.stateDir) return this.config.store.hubSatellite.stateDir;
@@ -37,7 +37,7 @@ export class SatelliteService implements SatelliteAdapter, OnDestroy {
     }
     start() { if (this.config.store.hubSatellite?.enabled !== false) this.client.start(); }
     capabilities() {
-        return [...this.tools.keys(), 'read_terminal_output'].filter(name =>
+        return [...this.tools.keys(), 'read_terminal_output', 'habby.new_window'].filter(name =>
             (!name.startsWith('sftp_') || (this.sftp.isAvailable() && this.config.store.mcp?.sftp?.enabled !== false)) &&
             (name !== 'get_session_environment' || this.config.store.mcp?.environmentDetection?.enabled === true));
     }
@@ -117,6 +117,10 @@ export class SatelliteService implements SatelliteAdapter, OnDestroy {
                         if (session.isSplit) (session.tabParent as any).focus(session.tab);
                     }
                 }
+            }
+            if (operation === 'habby.new_window') {
+                this.hostApp.newWindow();
+                return { content: [{ type: 'text', text: JSON.stringify({ requested: true }) }] };
             }
             if (operation === 'read_terminal_output') {
                 const session = this.terminal.findSessionByLocator(params);

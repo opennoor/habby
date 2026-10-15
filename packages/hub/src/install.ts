@@ -10,7 +10,8 @@ import { PRIVATE_STATE_FILES, privateDirectory, writePrivateFile, writePrivateJs
 type Platform = 'linux' | 'darwin' | 'win32';
 type Exec = (file: string, args: string[]) => Promise<unknown>;
 const execute: Exec = (file, args) => promisify(execFile)(file, args, { windowsHide: true, timeout: 30000, env: { ...process.env, LC_ALL: 'C' } });
-const PLUGIN = 'habby-satellite';
+const PLUGIN = 'tabby-habby';
+const LEGACY_PLUGIN = 'habby-satellite';
 const SERVICE = 'habby';
 const exists = async (p: string) => { try { await access(p); return true; } catch { return false; } };
 const xml = (s: string) => s.replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]!);
@@ -52,11 +53,11 @@ async function pluginSource(): Promise<string> {
   }
   throw new Error('Compiled satellite missing. Build with pnpm build, or use a complete release archive.');
 }
-async function ensureOwnedPlugin(destination: string): Promise<void> {
+async function ensureOwnedPlugin(destination: string, expectedName = PLUGIN): Promise<void> {
   if (!await exists(destination)) return;
   if ((await lstat(destination)).isSymbolicLink()) throw new Error('Refusing to replace a symlinked plugin directory.');
   const manifest = JSON.parse(await readFile(path.join(destination, 'package.json'), 'utf8'));
-  if (manifest.name !== PLUGIN) throw new Error('Refusing to replace a different plugin.');
+  if (manifest.name !== expectedName) throw new Error('Refusing to replace a different plugin.');
 }
 export async function installHub(options: InstallOptions): Promise<{ pluginDir: string; servicePath: string; supervisor: Platform; started: boolean }> {
   const { config } = options;
@@ -71,7 +72,9 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
   await access(path.join(config.stateDir, 'satellite.json'));
   const pluginDir = path.resolve(options.pluginDir ?? defaultPluginDir(platform, home, env));
   const destination = path.join(pluginDir, 'node_modules', PLUGIN);
+  const legacyDestination = path.join(pluginDir, 'node_modules', LEGACY_PLUGIN);
   await ensureOwnedPlugin(destination);
+  await ensureOwnedPlugin(legacyDestination, LEGACY_PLUGIN);
   await mkdir(path.dirname(destination), { recursive: true });
   const staging = `${destination}.staging-${process.pid}`, backup = `${destination}.backup-${process.pid}`;
   await rm(staging, { recursive: true, force: true });
@@ -85,6 +88,7 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
     try { await rename(staging, destination); } catch (error) { if (await exists(backup)) await rename(backup, destination); throw error; }
     await rm(backup, { recursive: true, force: true });
   } finally { await rm(staging, { recursive: true, force: true }); }
+  await rm(legacyDestination, { recursive: true, force: true });
   await writePrivateJson(path.join(config.stateDir, 'installation.json'), { pluginDir });
   const target = servicePath(platform, home, config.stateDir, env);
   await mkdir(path.dirname(target), { recursive: true });

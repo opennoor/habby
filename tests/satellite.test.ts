@@ -306,7 +306,7 @@ test('session metadata switches suppress only selected fields in enumeration and
     Object.assign(pane, { profile: { id: 'profile', name: 'private-profile', type: 'local' }, session: { pty: { pid: 123 }, cwd: '/private/cwd' } });
     host.app.tabs = [pane];
     const config = (host.terminal as any).config;
-    const service = new (loadSatelliteService())(host.app, config, { run: (callback: () => unknown) => callback() },
+    const service = new (loadSatelliteService())(host.app, config, { run: (callback: () => unknown) => callback() }, { newWindow() {} },
         host.terminal, host.tabs, host.sftp, { windowID: 1 });
     const tool = host.terminal.mcpTools.find((tool: any) => tool.name === 'get_session_list');
     const enumerate = async () => JSON.parse((await tool.handler({})).content[0].text)[0];
@@ -554,7 +554,7 @@ test('production SatelliteService rejects conflicting exact selectors before sel
     const terminal = { mcpTools: [{ name: 'exec_command', handler }], findTerminalSessions: () => [session],
         findSessionByLocator: ({ sessionId }: any) => sessionId === 'pane-b' ? session : null };
     const tabs = { mcpTools: [{ name: 'split_tab', handler }], findTabByLocator: ({ tabId }: any) => tabId === 'tab-a' ? a : tabId === 'tab-b' ? b : null };
-    const service = new SatelliteService(app, { store: {} }, { run: (callback: () => unknown) => callback() },
+    const service = new SatelliteService(app, { store: {} }, { run: (callback: () => unknown) => callback() }, { newWindow() {} },
         terminal, tabs, { mcpTools: [] }, { windowID: 1 });
     const signal = new AbortController().signal;
     try {
@@ -586,7 +586,7 @@ test('production output routing rotates changed sources, closes lost sources and
     const parent = {};
     const session = { sessionId: 'pane', tab: pane, tabParent: parent };
     const terminal = { mcpTools: [{ name: 'list_profiles', handler: async () => ({ profiles: [] }) }], findTerminalSessions: () => [session], findSessionByLocator: () => session };
-    const service = new SatelliteService({ tabs: [parent] }, { store: {} }, { run: (callback: () => unknown) => callback() },
+    const service = new SatelliteService({ tabs: [parent] }, { store: {} }, { run: (callback: () => unknown) => callback() }, { newWindow() {} },
         terminal, { mcpTools: [], getOrCreateTabId: () => 'tab' }, { mcpTools: [], getTransfers: () => [] }, { windowID: 1 });
     const read = async (params = {}) => JSON.parse((await service.run('read_terminal_output', { sessionId: 'pane', ...params },
         protocol.LOCAL_PRINCIPAL, new AbortController().signal)).content[0].text);

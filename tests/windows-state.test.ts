@@ -71,7 +71,7 @@ test('native Windows state replaces unsafe explicit ACLs before writing secrets'
   for (const name of ['state-directory', ...files]) assert.equal(unsafeChecks.find(check => check.name === name)?.ok, false, `${name}: doctor must detect unsafe ACLs`);
   assert.deepEqual(await descriptors(), unsafeDescriptors, 'Doctor must not repair directory or file ACLs.');
   const source = join(stateDir, 'fixture-source'); await mkdir(join(source, 'dist'), { recursive: true });
-  await writeFile(join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
+  await writeFile(join(source, 'package.json'), JSON.stringify({ name: 'tabby-habby' }));
   await writeFile(join(source, 'dist', 'index.js'), 'plugin');
   let registrationObserved = false;
   await installHub({ config: state.config, platform: 'win32', pluginSource: source, pluginDir: join(stateDir, 'plugins'), start: false,

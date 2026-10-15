@@ -13,19 +13,19 @@ The checked-in installers consume versioned GitHub releases and `SHA256SUMS`. Th
 On Linux or macOS, inspect the downloaded `install.sh`, then run:
 
 ```sh
-VERSION=1.1.0 sh install.sh
+VERSION=1.2.0 sh install.sh
 # For downloads made in a browser:
-VERSION=1.1.0 ARCHIVE_DIR="$HOME/Downloads/tabby-release" sh install.sh
+VERSION=1.2.0 ARCHIVE_DIR="$HOME/Downloads/tabby-release" sh install.sh
 # Portable/custom Tabby profile: pass its userPluginsPath (parent of node_modules).
-VERSION=1.1.0 sh install.sh --plugin-dir "/path/to/tabby/plugins"
+VERSION=1.2.0 sh install.sh --plugin-dir "/path/to/tabby/plugins"
 ```
 
 On Windows, inspect the downloaded `install.ps1`, then run it in PowerShell:
 
 ```powershell
-.\install.ps1 -Version 1.1.0
-.\install.ps1 -Version 1.1.0 -ArchiveDir "$HOME\Downloads\tabby-release"
-.\install.ps1 -Version 1.1.0 -PluginDir "D:\PortableTabby\plugins"
+.\install.ps1 -Version 1.2.0
+.\install.ps1 -Version 1.2.0 -ArchiveDir "$HOME\Downloads\tabby-release"
+.\install.ps1 -Version 1.2.0 -PluginDir "D:\PortableTabby\plugins"
 ```
 
 Windows needs the built-in `tar.exe` available on supported Windows 10/11. Scripts install into version-specific user directories and update the supervisor to the new absolute runtime/entrypoint. They preserve previous version directories for explicit rollback. Rerunning the same version refuses to overwrite that version's immutable directory. Different-version upgrades within Habby replace only its satellite and service; unrelated Tabby plugins and Tailscale mappings are retained. Add the printed launcher directory to your user `PATH`, then restart existing Tabby windows once.
@@ -40,7 +40,9 @@ Default satellite locations:
 | macOS | `~/Library/Application Support/tabby/plugins` |
 | Windows | `%APPDATA%\tabby\plugins` |
 
-The installed package is `node_modules/habby-satellite`, which [Tabby's loader discovers by enumerating that directory](https://github.com/Eugeny/tabby/blob/master/app/src/plugins.ts). Its `hub-state.json` identifies the private state directory; credentials remain in that state directory. Use `--plugin-dir` for a selected/portable profile whose directory differs. The installer does not edit the rest of Tabby's plugin manifest or existing SSH credentials.
+The installed package is `node_modules/tabby-habby`. [Tabby's loader requires the `tabby-` package prefix and a `tabby-plugin` keyword](https://github.com/Eugeny/tabby/blob/master/app/src/plugins.ts), so it appears as **habby** in the installed plugins list after a Tabby restart. The installer removes the earlier undiscoverable `habby-satellite` package. Its `hub-state.json` identifies the private state directory; credentials remain in that state directory. Use `--plugin-dir` for a selected/portable profile whose directory differs. The installer does not edit the rest of Tabby's plugin manifest or existing SSH credentials.
+
+`habby.new_window` opens another Tabby window and returns its `windowId`. With no connected window, the Hub starts Tabby itself. If Tabby is installed outside a standard location, set `TABBY_EXECUTABLE` to its absolute executable path in the Habby service environment.
 
 ## Supervisors and troubleshooting
 
@@ -83,7 +85,7 @@ On Linux with Tabby and `xvfb-run` installed, `pnpm smoke:tabby` loads the compi
 
 The same smoke test supports Windows with `TABBY_EXECUTABLE` set to the full path of `Tabby.exe`; it uses a native PowerShell profile. `TABBY_SMOKE_TIMEOUT_MS` controls GUI startup/polling deadlines on slow test machines (default 45000, maximum 600000). `TABBY_SMOKE_COMMAND_TIMEOUT_MS` controls its command deadline (default 30000, maximum 300000). On an isolated Windows test machine, run `scripts/windows-native-tests.ps1` from an administrator shell to create two temporary standard users and verify private-state access across them. `-TimeoutSeconds 900` allows a slower VM more time; the default is 180 seconds. The script removes accounts it created afterwards. If the repository is in a private user profile, stage the tests/runtime/dependencies somewhere those users can traverse and pass `-ProjectRoot` for that checkout or compiled fixture. This elevation is for the cross-user test fixture, not ordinary Hub installation.
 
-After `pnpm build` and `pnpm release win-x64`, `pnpm smoke:windows-package` exercises the local 1.1.0 x64 archive, installer and real Task Scheduler lifecycle. It refuses an existing current-user Hub task and isolates state, plugin and version directories, while retaining an unrelated fixture plugin. Run it on a disposable acceptance account with an existing desktop login; its daemon crash is intentional. Aggregate startup waits allow five minutes on slow hosts. The production helper deadlines remain unchanged. Repeating native triggers recover a stopped/crashed daemon; `IgnoreNew` prevents additional live instances. `--no-start` omits the registration trigger and waits for the next logon.
+After `pnpm build` and `pnpm release win-x64`, `pnpm smoke:windows-package` exercises the local 1.2.0 x64 archive, installer and real Task Scheduler lifecycle. It refuses an existing current-user Hub task and isolates state, plugin and version directories, while retaining an unrelated fixture plugin. Run it on a disposable acceptance account with an existing desktop login; its daemon crash is intentional. Aggregate startup waits allow five minutes on slow hosts. The production helper deadlines remain unchanged. Repeating native triggers recover a stopped/crashed daemon; `IgnoreNew` prevents additional live instances. `--no-start` omits the registration trigger and waits for the next logon.
 
 On macOS, `pnpm smoke:tabby` launches `/Applications/Tabby.app/Contents/MacOS/Tabby` directly and uses Zsh. Set `TABBY_EXECUTABLE` for another application location. It retains the isolated temporary profile and does not register a LaunchAgent or edit the user's profile.
 

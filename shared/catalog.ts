@@ -261,6 +261,8 @@ Max download size is configurable in Tabby Settings → MCP → SFTP.`, schema: 
             })), scopes: ['files:write'], aggregate: false },
   { name: 'list_windows', description: 'List every authorized Tabby window and its capabilities.',
     schema: z.object({ windowId: z.string().uuid().optional() }).strict(), scopes: ['terminal:read'], aggregate: true },
+  { name: 'habby.new_window', description: 'Open a new Tabby window and return its windowId for subsequent tools. Also starts Tabby when no window is open.',
+    schema: z.object({ windowId: z.string().uuid().optional() }).strict(), scopes: ['terminal:manage'], aggregate: false },
   { name: 'read_terminal_output', description: 'Read bounded incremental PTY output. Cursors are opaque; gaps report eviction.',
     schema: targets(z.object({ cursor: z.string().max(256).optional(), maxBytes: z.number().int().min(1).max(65536).default(65536),
       waitMs: z.number().int().min(0).max(25000).default(0) })), scopes: ['terminal:read'], aggregate: false },
@@ -272,6 +274,7 @@ export function authorize(principal: Principal, operation: string, params: Recor
   const scopes = [...definition.scopes];
   if (operation === 'get_session_environment' && params.activeProbe === true) scopes.push('terminal:write');
   if (!scopes.every(scope => principal.scopes.includes(scope))) throw new HubError('FORBIDDEN', 'Required scope is not granted.');
+  if (operation === 'habby.new_window' && principal.windows) throw new HubError('FORBIDDEN', 'Creating windows requires an unrestricted window grant.');
   if (principal.expiresAt && principal.expiresAt <= Date.now()) throw new HubError('UNAUTHORIZED', 'Grant expired.');
   if (windowId && principal.windows && !principal.windows.includes(windowId)) throw new HubError('FORBIDDEN', 'Window is not granted.');
 }
