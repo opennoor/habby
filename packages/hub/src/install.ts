@@ -10,8 +10,8 @@ import { PRIVATE_STATE_FILES, privateDirectory, writePrivateFile, writePrivateJs
 type Platform = 'linux' | 'darwin' | 'win32';
 type Exec = (file: string, args: string[]) => Promise<unknown>;
 const execute: Exec = (file, args) => promisify(execFile)(file, args, { windowsHide: true, timeout: 30000, env: { ...process.env, LC_ALL: 'C' } });
-const PLUGIN = 'tabby-hub-satellite';
-const SERVICE = 'tabby-hub';
+const PLUGIN = 'habby-satellite';
+const SERVICE = 'habby';
 const exists = async (p: string) => { try { await access(p); return true; } catch { return false; } };
 const xml = (s: string) => s.replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]!);
 const systemdQuote = (s: string) => '"' + s.replaceAll('%', '%%').replaceAll('$', () => '$$').replaceAll('\\', '\\\\').replaceAll('"', '\\"') + '"';
@@ -31,8 +31,8 @@ export function defaultPluginDir(platform = process.platform, home = homedir(), 
 export function renderSupervisor(platform: Platform, executable: string, entrypoint: string, stateDir: string, start = true, user?: string): string {
   const args = [entrypoint, 'start', '--state-dir', stateDir];
   if ([executable, ...args].some(s => /[\r\n\0]/.test(s))) throw new Error('Service paths cannot contain line breaks or NUL.');
-  if (platform === 'linux') return `[Unit]\nDescription=Tabby Hub MCP\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${[executable, ...args].map(systemdQuote).join(' ')}\nRestart=on-failure\nRestartSec=3\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
-  if (platform === 'darwin') return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.tabby-hub.mcp</string><key>ProgramArguments</key><array>${[executable, ...args].map(s => `<string>${xml(s)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer><key>StandardErrorPath</key><string>${xml(path.join(stateDir, 'hub.stderr.log'))}</string></dict></plist>\n`;
+  if (platform === 'linux') return `[Unit]\nDescription=Habby MCP\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${[executable, ...args].map(systemdQuote).join(' ')}\nRestart=on-failure\nRestartSec=3\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+  if (platform === 'darwin') return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.habby.mcp</string><key>ProgramArguments</key><array>${[executable, ...args].map(s => `<string>${xml(s)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer><key>StandardErrorPath</key><string>${xml(path.join(stateDir, 'hub.stderr.log'))}</string></dict></plist>\n`;
   // RestartOnFailure did not recover an externally killed daemon on native Windows.
   // Repeating native triggers recover it; IgnoreNew leaves a live instance alone.
   const repeat = '<Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>';
@@ -41,10 +41,10 @@ export function renderSupervisor(platform: Platform, executable: string, entrypo
 }
 function servicePath(platform: Platform, home: string, stateDir: string, env: NodeJS.ProcessEnv): string {
   return platform === 'linux' ? path.join(env.XDG_CONFIG_HOME ?? path.join(home, '.config'), 'systemd', 'user', `${SERVICE}.service`)
-    : platform === 'darwin' ? path.join(home, 'Library', 'LaunchAgents', 'com.tabby-hub.mcp.plist') : path.join(stateDir, 'task.xml');
+    : platform === 'darwin' ? path.join(home, 'Library', 'LaunchAgents', 'com.habby.mcp.plist') : path.join(stateDir, 'task.xml');
 }
 const psQuote = (s: string) => "'" + s.replaceAll("'", "''") + "'";
-function taskName(env: NodeJS.ProcessEnv): string { return `TabbyHubMCP-${(env.USERNAME ?? 'user').replace(/[^\w.-]/g, '_')}`; }
+function taskName(env: NodeJS.ProcessEnv): string { return `HabbyMCP-${(env.USERNAME ?? 'user').replace(/[^\w.-]/g, '_')}`; }
 async function pluginSource(): Promise<string> {
   for (const relative of ['../../../../packages/satellite', '../../../satellite', '../../satellite']) {
     const candidate = fileURLToPath(new URL(relative, import.meta.url));
@@ -101,7 +101,7 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
     const domain = `gui/${process.getuid!()}`;
     // Replacing an existing definition requires unloading it first.
     let replacing = false;
-    try { await exec('launchctl', ['bootout', `${domain}/com.tabby-hub.mcp`]); replacing = true; }
+    try { await exec('launchctl', ['bootout', `${domain}/com.habby.mcp`]); replacing = true; }
     catch (error) { if ((error as { code?: number }).code !== 3) throw error; } // ESRCH: no such service
     if (start) {
       // launchd can briefly return EIO after a successful bootout while retiring the old job.
@@ -150,7 +150,7 @@ export async function uninstallHub(config: HubConfig, options: Omit<InstallOptio
       if (failure.code !== 1 || !diagnostics?.length || diagnostics.some(line => !missing.includes(line))) throw error;
     }
   } else if (platform === 'darwin') {
-    try { await exec('launchctl', ['bootout', `gui/${process.getuid!()}/com.tabby-hub.mcp`]); }
+    try { await exec('launchctl', ['bootout', `gui/${process.getuid!()}/com.habby.mcp`]); }
     catch (error) { if ((error as { code?: number }).code !== 3) throw error; } // ESRCH: no such service
   } else {
     await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules');
@@ -187,7 +187,7 @@ export async function doctor(config: HubConfig): Promise<Array<{ name: string; o
     const script = `$ErrorActionPreference='Stop'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
       [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
       $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $result=@{}
-      foreach($path in (ConvertFrom-Json $env:TABBY_HUB_DOCTOR_PATHS)) {
+      foreach($path in (ConvertFrom-Json $env:HABBY_DOCTOR_PATHS)) {
         $ok=$false
         try {
           $item=Get-Item -Force -LiteralPath $path
@@ -201,7 +201,7 @@ export async function doctor(config: HubConfig): Promise<Array<{ name: string; o
       }; ConvertTo-Json -Compress -InputObject $result`;
     try {
       const result = await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-        { windowsHide: true, timeout: 30000, env: { ...process.env, TABBY_HUB_DOCTOR_PATHS: JSON.stringify(entries.map(entry => entry.p)) } });
+        { windowsHide: true, timeout: 30000, env: { ...process.env, HABBY_DOCTOR_PATHS: JSON.stringify(entries.map(entry => entry.p)) } });
       privatePaths = JSON.parse(result.stdout);
     } catch { /* A failed ACL inspection cannot establish privacy. */ }
   }
@@ -219,7 +219,7 @@ export async function doctor(config: HubConfig): Promise<Array<{ name: string; o
   try {
     const response = await fetch(`http://127.0.0.1:${config.trustedPort}/health`, { signal: AbortSignal.timeout(2000) });
     const body = await response.json() as { name?: string; alive?: boolean };
-    const healthy = response.ok && body.name === 'Tabby Hub' && body.alive === true;
+    const healthy = response.ok && body.name === 'Habby' && body.alive === true;
     checks.push({ name: 'hub', ok: healthy, detail: healthy ? 'Trusted listener healthy' : `Unexpected health response on port ${config.trustedPort} (HTTP ${response.status}).` });
   } catch { checks.push({ name: 'hub', ok: false, detail: 'Trusted listener unreachable; check supervisor status.' }); }
   return checks;

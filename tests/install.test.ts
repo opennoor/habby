@@ -36,27 +36,27 @@ test('installation, upgrade and uninstall preserve other plugins and private sta
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const source = path.join(tmp, 'source'), stateDir = path.join(tmp, 'state'), pluginDir = path.join(tmp, 'plugins');
   await mkdir(path.join(source, 'dist'), { recursive: true }); await mkdir(stateDir);
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite', main: 'dist/index.js' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite', main: 'dist/index.js' }));
   await writeFile(path.join(source, 'dist', 'index.js'), 'version1');
   await writeFile(path.join(stateDir, 'satellite.json'), '{}', { mode: 0o600 });
   await mkdir(path.join(pluginDir, 'node_modules', 'unrelated'), { recursive: true });
   await writeFile(path.join(pluginDir, 'node_modules', 'unrelated', 'keep'), 'keep');
   const calls: Array<[string, string[]]> = [];
-  const options = { config: { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, platform: 'linux' as const, home: tmp, env: {}, pluginDir, pluginSource: source, executable: '/bundle/node', entrypoint: '/bundle/cli.js', exec: async (file: string, args: string[]) => { calls.push([file, args]); } };
+  const options = { config: { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 }, platform: 'linux' as const, home: tmp, env: {}, pluginDir, pluginSource: source, executable: '/bundle/node', entrypoint: '/bundle/cli.js', exec: async (file: string, args: string[]) => { calls.push([file, args]); } };
   const installed = await installHub(options);
   assert.equal(installed.started, true);
-  assert.equal(await readFile(path.join(pluginDir, 'node_modules', 'tabby-hub-satellite', 'dist', 'index.js'), 'utf8'), 'version1');
-  assert.deepEqual(JSON.parse(await readFile(path.join(pluginDir, 'node_modules', 'tabby-hub-satellite', 'hub-state.json'), 'utf8')), { stateDir });
+  assert.equal(await readFile(path.join(pluginDir, 'node_modules', 'habby-satellite', 'dist', 'index.js'), 'utf8'), 'version1');
+  assert.deepEqual(JSON.parse(await readFile(path.join(pluginDir, 'node_modules', 'habby-satellite', 'hub-state.json'), 'utf8')), { stateDir });
   if (process.platform !== 'win32') assert.equal((await stat(installed.servicePath)).mode & 0o077, 0);
-  assert.deepEqual(calls[2], ['systemctl', ['--user', 'restart', 'tabby-hub.service']]);
+  assert.deepEqual(calls[2], ['systemctl', ['--user', 'restart', 'habby.service']]);
   await writeFile(path.join(source, 'dist', 'index.js'), 'version2');
   await installHub({ ...options, start: false });
-  assert.equal(await readFile(path.join(pluginDir, 'node_modules', 'tabby-hub-satellite', 'dist', 'index.js'), 'utf8'), 'version2');
+  assert.equal(await readFile(path.join(pluginDir, 'node_modules', 'habby-satellite', 'dist', 'index.js'), 'utf8'), 'version2');
   const { pluginDir: _customDir, ...uninstallOptions } = options;
   await uninstallHub(options.config, uninstallOptions);
   await access(path.join(stateDir, 'satellite.json')); await access(path.join(pluginDir, 'node_modules', 'unrelated', 'keep'));
   await assert.rejects(access(installed.servicePath));
-  await assert.rejects(access(path.join(pluginDir, 'node_modules', 'tabby-hub-satellite')));
+  await assert.rejects(access(path.join(pluginDir, 'node_modules', 'habby-satellite')));
   await uninstallHub(options.config, options);
 });
 
@@ -64,9 +64,9 @@ test('a supervisor failure is surfaced and does not claim a successful installat
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-install-failure-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const source = path.join(tmp, 'source'); await mkdir(path.join(source, 'dist'), { recursive: true });
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
   await writeFile(path.join(source, 'dist', 'index.js'), 'plugin'); await writeFile(path.join(tmp, 'satellite.json'), '{}');
-  await assert.rejects(installHub({ config: { stateDir: tmp, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, pluginSource: source, home: tmp, env: {}, platform: 'linux', exec: async () => { throw new Error('user systemd unavailable'); } }), /user systemd unavailable/);
+  await assert.rejects(installHub({ config: { stateDir: tmp, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 }, pluginSource: source, home: tmp, env: {}, platform: 'linux', exec: async () => { throw new Error('user systemd unavailable'); } }), /user systemd unavailable/);
 });
 
 test('doctor rejects an unrelated HTTP200 process occupying the configured port', async t => {
@@ -74,7 +74,7 @@ test('doctor rejects an unrelated HTTP200 process occupying the configured port'
   t.after(() => rm(tmp, { recursive: true, force: true }));
   for (const name of ['config.json', 'satellite.json']) await writeFile(path.join(tmp, name), '{}', { mode: 0o600 });
   let correct = false;
-  const server = createServer((_req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(correct ? { name: 'Tabby Hub', alive: true } : { alive: true, name: 'different daemon' })); });
+  const server = createServer((_req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(correct ? { name: 'Habby', alive: true } : { alive: true, name: 'different daemon' })); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => { server.closeAllConnections(); server.close(); });
   const address = server.address(); assert.ok(address && typeof address !== 'string');
@@ -165,12 +165,12 @@ test('Unix supervisor upgrades repair existing writable units and plists', { ski
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-supervisor-upgrade-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const source = path.join(tmp, 'source'); await mkdir(path.join(source, 'dist'), { recursive: true });
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
   await writeFile(path.join(source, 'dist', 'index.js'), 'plugin');
   const stateDir = path.join(tmp, 'state'); await mkdir(stateDir);
   await writeFile(path.join(stateDir, 'satellite.json'), '{}', { mode: 0o600 });
   for (const platform of ['linux', 'darwin'] as const) {
-    const options = { config: { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, platform,
+    const options = { config: { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 }, platform,
       home: tmp, env: {}, pluginSource: source, pluginDir: path.join(tmp, platform, 'plugins'), start: false, exec: async () => {} };
     const installed = await installHub(options);
     await chmod(installed.servicePath, 0o666);
@@ -218,10 +218,10 @@ test('Unix installer replaces private control records and supervisor links witho
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-control-upgrade-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const source = path.join(tmp, 'source'); await mkdir(path.join(source, 'dist'), { recursive: true });
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
   await writeFile(path.join(source, 'dist', 'index.js'), 'plugin');
   const stateDir = path.join(tmp, 'state'); await mkdir(stateDir); await writeFile(path.join(stateDir, 'satellite.json'), '{}');
-  const options = { config: { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, platform: 'linux' as const,
+  const options = { config: { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 }, platform: 'linux' as const,
     home: tmp, env: {}, pluginSource: source, start: false, exec: async () => {} };
   const installed = await installHub(options);
   await chmod(path.join(stateDir, 'installation.json'), 0o666);
@@ -241,9 +241,9 @@ test('uninstall stops and deregisters missing definitions before removing plugin
       const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-uninstall-'));
       t.after(() => rm(home, { recursive: true, force: true }));
       const stateDir = path.join(home, 'state'), pluginDir = path.join(home, 'plugins');
-      const destination = path.join(pluginDir, 'node_modules', 'tabby-hub-satellite');
+      const destination = path.join(pluginDir, 'node_modules', 'habby-satellite');
       await mkdir(destination, { recursive: true }); await mkdir(stateDir);
-      await writeFile(path.join(destination, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite' }));
+      await writeFile(path.join(destination, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
       await writeFile(path.join(stateDir, 'secrets.json'), 'retain on failure');
       const calls: Array<[string, string[]]> = [];
       const options = { platform, home, pluginDir, env: { USERNAME: 'fixture' }, purge: true,
@@ -253,11 +253,11 @@ test('uninstall stops and deregisters missing definitions before removing plugin
           if (scenario === 'failure') throw Object.assign(new Error('supervisor access denied'), { code: 1, stderr: 'Permission denied' });
           if (scenario === 'absent' && platform !== 'win32') {
             if (args.includes('stop')) throw Object.assign(new Error('not installed'), { code: 5 });
-            if (args.includes('disable')) throw Object.assign(new Error('not installed'), { code: 1, stderr: "Failed to disable unit: Unit tabby-hub.service does not exist\nRemoved '/fixture/default.target.wants/tabby-hub.service'.\n" });
+            if (args.includes('disable')) throw Object.assign(new Error('not installed'), { code: 1, stderr: "Failed to disable unit: Unit habby.service does not exist\nRemoved '/fixture/default.target.wants/habby.service'.\n" });
             if (file === 'launchctl') throw Object.assign(new Error('no such service'), { code: 3 });
           }
         } };
-      const config = { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 };
+      const config = { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 };
       if (scenario === 'failure') {
         await assert.rejects(uninstallHub(config, options), /supervisor access denied/);
         await access(destination); assert.equal(await readFile(path.join(stateDir, 'secrets.json'), 'utf8'), 'retain on failure');
@@ -268,7 +268,7 @@ test('uninstall stops and deregisters missing definitions before removing plugin
         if (platform === 'darwin') assert.equal(calls[0][1][0], 'bootout');
         if (platform === 'win32') {
           const command = calls[0][1].at(-1)!;
-          assert.match(command, /GetTask\('TabbyHubMCP-fixture'\)/);
+          assert.match(command, /GetTask\('HabbyMCP-fixture'\)/);
           assert.match(command, /HResult -ne -2147024894/);
           assert.match(command, /\$task.Stop\(0\)/);
           assert.match(command, /GetInstances\(0\).Count -gt 0/);
@@ -284,8 +284,8 @@ test('missing Linux unit diagnostics do not hide disable permission or connectiv
   const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-uninstall-error-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const stateDir = path.join(home, 'state'); await mkdir(stateDir); await writeFile(path.join(stateDir, 'keep'), 'keep');
-  const config = { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 };
-  for (const stderr of ['Permission denied', 'Failed to connect to bus', 'Failed to disable unit: Unit tabby-hub.service does not exist\nPermission denied']) {
+  const config = { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 };
+  for (const stderr of ['Permission denied', 'Failed to connect to bus', 'Failed to disable unit: Unit habby.service does not exist\nPermission denied']) {
     await assert.rejects(uninstallHub(config, { platform: 'linux', home, env: {}, purge: true, exec: async (_file, args) => {
       if (args.includes('disable')) throw Object.assign(new Error('disable failed'), { code: 1, stderr });
     } }), /disable failed/);
@@ -297,7 +297,7 @@ test('native Windows uninstall recognizes a genuinely unregistered task', { skip
   const home = await mkdtemp(path.join(os.tmpdir(), 'tabby-uninstall-native-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const stateDir = path.join(home, 'state'); await mkdir(stateDir);
-  await uninstallHub({ stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, {
+  await uninstallHub({ stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 }, {
     platform: 'win32', home, env: { APPDATA: home, USERNAME: `absent-${Date.now()}-${process.pid}` }, purge: true,
   });
   await assert.rejects(access(stateDir));
@@ -308,10 +308,10 @@ test('macOS upgrade retries transient bootstrap failure and surfaces supervisor 
   t.after(() => rm(home, { recursive: true, force: true }));
   const source = path.join(home, 'source'), stateDir = path.join(home, 'state');
   await mkdir(path.join(source, 'dist'), { recursive: true }); await mkdir(stateDir);
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-hub-satellite' }));
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'habby-satellite' }));
   await writeFile(path.join(source, 'dist/index.js'), 'plugin');
   await writeFile(path.join(stateDir, 'satellite.json'), '{}', { mode: 0o600 });
-  const options = { config: { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 },
+  const options = { config: { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 },
     platform: 'darwin' as const, home, env: {}, pluginSource: source };
   const transient = Object.assign(new Error('Bootstrap failed: 5: Input/output error'), { code: 5 });
   let attempts = 0;
@@ -354,7 +354,7 @@ test('Windows deregistration script distinguishes missing, denied and still-runn
   t.after(() => rm(home, { recursive: true, force: true }));
   const stateDir = path.join(home, 'state'); await mkdir(stateDir);
   let command = '';
-  await uninstallHub({ stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 }, {
+  await uninstallHub({ stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 }, {
     platform: 'win32', home, env: {}, exec: async (_file, args) => { command = args.at(-1)!; },
   });
   for (const scenario of ['absent', 'denied', 'running', 'stopped']) {
@@ -401,16 +401,16 @@ test('Windows native test runner retains pre-existing users and fixture director
     $created=[Collections.Generic.List[string]]::new(); $removed=[Collections.Generic.List[string]]::new()
     function Get-Command { param($Name,$CommandType) [pscustomobject]@{Source='unused-fixture-executable'} }
     function New-LocalUser { param($Name,$Password)
-      if($Name -eq 'tabby-hub-reader-ci') { throw 'Reader already exists' }
+      if($Name -eq 'habby-reader-ci') { throw 'Reader already exists' }
       $created.Add($Name)
     }
     function Remove-LocalUser { param($Name,$ErrorAction) $removed.Add($Name) }
     try { & ${quote(runner)}; throw 'Expected setup failure' }
     catch { if($_.Exception.Message -ne 'Reader already exists') { throw } }
-    if(($created -join ',') -ne 'tabby-hub-ci' -or ($removed -join ',') -ne 'tabby-hub-ci') {
+    if(($created -join ',') -ne 'habby-ci' -or ($removed -join ',') -ne 'habby-ci') {
       throw 'Cleanup removed an account this run did not create'
     }
-    $root=Join-Path $env:PUBLIC 'tabby-hub-ci-tests'
+    $root=Join-Path $env:PUBLIC 'habby-ci-tests'
     if(Test-Path -LiteralPath $root) { throw 'Failed setup left its fixture directory behind' }
     $created.Clear(); $removed.Clear()
     function New-LocalUser { param($Name,$Password) throw 'Owner already exists' }

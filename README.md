@@ -1,12 +1,12 @@
-# tabby-hub-mcp
+# Habby
 
 One MCP endpoint for all your Tabby windows. A standalone Node daemon routes
 requests to a satellite plugin in each window, preserving its tabs, panes,
 profiles, terminals and SFTP sessions.
 
-[Download v1.0.0](https://github.com/Sojaner/tabby-hub-mcp/releases/tag/v1.0.0)
+[Download v1.1.0](https://github.com/Sojaner/habby/releases/tag/v1.1.0)
 for bundled Node runtimes, the Hub and the satellite plugin. See the
-[installation instructions](docs/installation.md) and [release validation](docs/validation-1.0.0.md).
+[installation instructions](docs/installation.md) and [previous release validation](docs/validation-1.0.0.md).
 
 ## Run from source
 
@@ -19,7 +19,7 @@ pnpm exec node dist/packages/hub/src/cli.js install
 ```
 
 Restart Tabby windows after installation. Connect an HTTP MCP client to
-`http://127.0.0.1:3001/mcp`, or use `tabby-hub bridge` for a stdio client.
+`http://127.0.0.1:4040/mcp`, or use `habby bridge` for a stdio client.
 Run `pnpm exec node dist/packages/hub/src/cli.js --help` for the source CLI.
 
 The Hub exposes all **36 upstream tools**, plus `list_windows` and bounded
@@ -34,10 +34,10 @@ directory or environment do not persist in the pane; use `send_input` for those
 changes or interactive commands. A zero exit without the completion probe,
 including unfinished syntax or an early `exit /b 0`, reports `OUTCOME_UNKNOWN`.
 
-Local clients need no authentication. `tabby-hub expose tailnet` enables trusted
+Local clients need no authentication. `habby expose tailnet` enables trusted
 direct Tailnet access. Public HTTPS and Funnel access uses OAuth authorization
 code flow with PKCE, passkey owner approval, scopes and revocable grants;
-`tabby-hub expose public --url https://HOST/PREFIX/mcp --funnel` configures it.
+`habby expose public --url https://HOST/PREFIX/mcp --funnel` configures it.
 Installation does not expose network access automatically.
 
 ## Installation and design
@@ -46,7 +46,7 @@ Installation does not expose network access automatically.
 - [Architecture](docs/architecture.md)
 - [Tabby-MCP capability inventory](docs/tabby-mcp-capabilities.md)
 - [Authentication and network boundaries](docs/authentication.md)
-- [v1.0.0 release validation and known limitations](docs/validation-1.0.0.md)
+- [Previous v1.0.0 validation and known limitations](docs/validation-1.0.0.md)
 - [Native macOS validation and remaining acceptance](docs/validation-macos.md)
 - [Native Windows validation and remaining acceptance](docs/validation-windows.md)
 

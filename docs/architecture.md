@@ -1,4 +1,4 @@
-# Tabby Hub and satellite architecture
+# Habby and satellite architecture
 
 Status: implementation architecture, 2026-10-02. The Hub and satellite are implemented.
 See [installation](installation.md) for operating instructions and native release acceptance limits.
@@ -7,7 +7,7 @@ The shipped baseline exposes tools over Streamable HTTP and the stdio bridge.
 Optional MCP resources/subscriptions, durable operation audit records and directory
 restrictions on file grants remain extensions described below.
 
-The Hub is one independently supervised Node process for the signed-in OS user. It exposes a single logical MCP server named **Tabby Hub**. Every Tabby window loads one satellite, which connects outward to the Hub and controls only that window. Agents discover and address every connected window through the Hub.
+The Hub is one independently supervised Node process for the signed-in OS user. It exposes a single logical MCP server named **Habby**. Every Tabby window loads one satellite, which connects outward to the Hub and controls only that window. Agents discover and address every connected window through the Hub.
 
 Supporting documents: [complete upstream capability inventory](tabby-mcp-capabilities.md) and [authentication research](authentication.md).
 
@@ -30,7 +30,7 @@ flowchart LR
     Serve --> Trusted
     Remote[Public agent] --> TLS[HTTPS proxy or Funnel]
     TLS --> Public[OAuth MCP listener]
-    Trusted --> Hub[Tabby Hub: registry and routing]
+    Trusted --> Hub[Habby: registry and routing]
     Public --> Hub
     Owner[Owner browser or phone] --> Auth[Passkey login and OAuth consent]
     Auth --> Public
@@ -44,7 +44,7 @@ Three listeners give the three trust boundaries distinct entry points. Example p
 
 | Listener | Binding | Purpose | Authorization |
 | --- | --- | --- | --- |
-| Trusted agents | `127.0.0.1:3001` | HTTP MCP at `/mcp`; local and Tailnet agents | No application token, as requested |
+| Trusted agents | `127.0.0.1:4040` | HTTP MCP at `/mcp`; local and Tailnet agents | No application token, as requested |
 | Satellites | `127.0.0.1:3002` | WSS at `/satellite`; local control/diagnostics with a separate credential | Pinned TLS plus installation credential |
 | Public access | `127.0.0.1:3003` behind HTTPS | MCP, OAuth discovery, owner login/consent | Bearer token for MCP; owner session for management |
 
@@ -53,10 +53,10 @@ Public access is opt-in. A conventional HTTPS proxy for a public hostname/IP and
 For portable direct Tailnet access, let the installed Tailscale daemon forward a Tailnet-only TCP port to the trusted agent listener:
 
 ```sh
-tailscale serve --bg --tcp=3001 tcp://127.0.0.1:3001
+tailscale serve --bg --tcp=4040 tcp://127.0.0.1:4040
 ```
 
-Agents then use `http://<host-tailnet-IP>:3001/mcp`. They reach the port directly over their encrypted Tailnet connection; Tailscale handles network authentication before forwarding. Apply a grant for the intended owner devices/agent tags. This avoids custom platform-dependent Tailscale socket bindings or treating an IP range as proof of identity. [Official Serve CLI](https://tailscale.com/docs/reference/tailscale-cli/serve), [grants](https://tailscale.com/docs/reference/syntax/grants).
+Agents then use `http://<host-tailnet-IP>:4040/mcp`. They reach the port directly over their encrypted Tailnet connection; Tailscale handles network authentication before forwarding. Apply a grant for the intended owner devices/agent tags. This avoids custom platform-dependent Tailscale socket bindings or treating an IP range as proof of identity. [Official Serve CLI](https://tailscale.com/docs/reference/tailscale-cli/serve), [grants](https://tailscale.com/docs/reference/syntax/grants).
 
 Funnel must target only the public listener. Installation checks preserve existing Serve/Funnel mappings and diagnose conflicting exposure. Never enable a blanket `trust proxy`, infer trust from `X-Forwarded-For`, or exempt public requests because a proxy connected from `127.0.0.1`. If Tailscale is absent, local operation still works and the Tailnet route is unavailable.
 
@@ -204,7 +204,7 @@ Unauthenticated loopback HTTP intentionally trusts local processes, including an
 
 Ship versioned platform archives/installers containing the compiled Hub, a pinned Node 24 LTS runtime, and the satellite plugin. Users need neither a global Node installation nor a compiler/native build toolchain. Developers can build and install from source with pnpm. Node 24 is an active LTS line at this research date. [Node release schedule](https://github.com/nodejs/Release).
 
-The `tabby-hub install` command detects Tabby and the user's selected profile/plugin directory, installs the packaged satellite, creates private shared state, registers/starts the OS supervisor, checks port ownership, and prints the local MCP configuration. Respect portable/custom Tabby directories rather than assuming one path. Use Tabby's supported plugin installation format; ordinary installation must not replace the user's other plugins or configure remote shell credentials. A satellite can also be installed from Tabby's plugin UI and connected to the same Hub. Restart existing Tabby windows once to load a newly installed plugin.
+The `habby install` command detects Tabby and the user's selected profile/plugin directory, installs the packaged satellite, creates private shared state, registers/starts the OS supervisor, checks port ownership, and prints the local MCP configuration. Respect portable/custom Tabby directories rather than assuming one path. Use Tabby's supported plugin installation format; ordinary installation must not replace the user's other plugins or configure remote shell credentials. A satellite can also be installed from Tabby's plugin UI and connected to the same Hub. Restart existing Tabby windows once to load a newly installed plugin.
 
 | OS | Default supervision | Shell acceptance targets |
 | --- | --- | --- |

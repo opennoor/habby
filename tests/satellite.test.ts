@@ -29,7 +29,7 @@ test('command markers survive arbitrary output chunk boundaries and ignore comma
 });
 test('Fish command text is quoted independently of the completion markers', () => {
     const wrapper = commandWrapper("printf '%s\\n' 'a\\b'\nprintf \"unterminated", 'fish', 'abc');
-    assert.equal(wrapper.text, "printf '\\n%s%s\\n' '__TABBY_abc_' 'START__'; eval 'printf \\'%s\\\\n\\' \\'a\\\\b\\'\nprintf \"unterminated'; set -l tabby_hub_abc $status; printf '\\n%s%s:%s\\n' '__TABBY_abc_' 'END__' $tabby_hub_abc");
+    assert.equal(wrapper.text, "printf '\\n%s%s\\n' '__TABBY_abc_' 'START__'; eval 'printf \\'%s\\\\n\\' \\'a\\\\b\\'\nprintf \"unterminated'; set -l habby_abc $status; printf '\\n%s%s:%s\\n' '__TABBY_abc_' 'END__' $habby_abc");
 });
 test('output cursors preserve arbitrary bytes, report eviction and reject ahead cursors', async () => {
     const ring = new OutputRings(8, 16);

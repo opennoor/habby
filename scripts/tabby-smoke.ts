@@ -22,7 +22,7 @@ assert.ok(Number.isInteger(waitMs) && waitMs >= 10000 && waitMs <= 600000, 'Inva
 const commandMs = Number(process.env.TABBY_SMOKE_COMMAND_TIMEOUT_MS ?? 30000);
 assert.ok(Number.isInteger(commandMs) && commandMs >= 1000 && commandMs <= 300000, 'Invalid TABBY_SMOKE_COMMAND_TIMEOUT_MS.');
 const root = fileURLToPath(new URL('../', import.meta.url));
-const temp = await mkdtemp(join(tmpdir(), 'tabby-hub-gui-'));
+const temp = await mkdtemp(join(tmpdir(), 'habby-gui-'));
 async function freePort() {
   const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const port = (server.address() as { port: number }).port;
@@ -43,7 +43,7 @@ let client: Client | undefined;
 let stderr = '';
 const sockets: WebSocket[] = [];
 try {
-  const data = join(temp, 'electron'); const plugin = join(data, 'plugins/node_modules/tabby-hub-satellite');
+  const data = join(temp, 'electron'); const plugin = join(data, 'plugins/node_modules/habby-satellite');
   await mkdir(plugin, { recursive: true });
   await cp(join(root, 'packages/satellite/dist'), join(plugin, 'dist'), { recursive: true });
   await cp(join(root, 'packages/satellite/package.json'), join(plugin, 'package.json'));
@@ -151,14 +151,14 @@ try {
     assert.equal(opened.ready, true, JSON.stringify(opened));
     sessions.push(opened.sessionId);
     const output = await tool('read_terminal_output', { sessionId: opened.sessionId });
-    await execute(opened.sessionId, `TABBY_HUB_WINDOW_${index}`);
+    await execute(opened.sessionId, `HABBY_WINDOW_${index}`);
     let cursor = output.cursor, streamedText = '';
     await waitFor(async () => {
       const streamed = await tool('read_terminal_output', { sessionId: opened.sessionId, cursor });
       cursor = streamed.cursor;
       // Windows line editing can emit more than one bounded page before the actual output.
       streamedText = (streamedText + Buffer.from(streamed.data, 'base64').toString()).slice(-131072);
-      return streamedText.includes(`TABBY_HUB_WINDOW_${index}`);
+      return streamedText.includes(`HABBY_WINDOW_${index}`);
     }, `window ${index} streamed command output`);
   }
   const secondTarget = (await targets()).find(item => item.type === 'page' && item.id !== target.id); assert(secondTarget);
@@ -204,10 +204,10 @@ try {
       return matched.length === index + 2 && matched.every((session: any) => session.isSplit && session.totalPanes === index + 2) ? sameTab : undefined;
     }, `same-tab ${direction} split panes`);
   }
-  for (const [index, pane] of panes.entries()) await execute(pane.id, `TABBY_HUB_PANE_${index}`);
+  for (const [index, pane] of panes.entries()) await execute(pane.id, `HABBY_PANE_${index}`);
   await firstWindow("setTimeout(()=>require('@electron/remote').getCurrentWindow().destroy(),50);true");
   await waitFor(() => online().length === 1, 'first window disconnection');
-  await execute(panes[1].id, 'TABBY_HUB_SURVIVES');
+  await execute(panes[1].id, 'HABBY_SURVIVES');
   await secondWindow("setTimeout(()=>require('@electron/remote').getCurrentWindow().destroy(),50);true");
   await waitFor(() => online().length === 0, 'all windows disconnected');
   assert.equal((await client.listTools()).tools.length, 38);

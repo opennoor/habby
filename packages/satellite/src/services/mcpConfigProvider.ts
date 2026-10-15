@@ -11,8 +11,8 @@ export class McpConfigProvider extends ConfigProvider {
     defaults = {
         hubSatellite: { enabled: true, stateDir: "" },
         mcp: {
-            port: 3001,
-            host: 'http://127.0.0.1:3001',
+            port: 4040,
+            host: 'http://127.0.0.1:4040',
             enableLogging: true,
             startOnBoot: true,
             logLevel: 'info',

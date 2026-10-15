@@ -1,10 +1,10 @@
 param([ValidateRange(30,3600)][int]$TimeoutSeconds = 180, [string]$ProjectRoot = (Split-Path $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
-$user = 'tabby-hub-ci'
-$otherUser = 'tabby-hub-reader-ci'
+$user = 'habby-ci'
+$otherUser = 'habby-reader-ci'
 $secure = ConvertTo-SecureString ([guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
-$testRoot = Join-Path $env:PUBLIC 'tabby-hub-ci-tests'
+$testRoot = Join-Path $env:PUBLIC 'habby-ci-tests'
 if (Test-Path -LiteralPath $testRoot) { throw "Test directory already exists: $testRoot" }
 $manifestPath = Join-Path $testRoot 'probe.json'
 $node = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
@@ -46,9 +46,9 @@ $ErrorActionPreference='Stop'
 $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
 $env:TEMP=$PSScriptRoot
 $env:TMP=$PSScriptRoot
-$env:TABBY_HUB_REQUIRE_STANDARD_USER='1'
-$env:TABBY_HUB_NATIVE_TEST_ROOT=$PSScriptRoot
-$env:TABBY_HUB_ACL_PROBE_MANIFEST=Join-Path $PSScriptRoot 'probe.json'
+$env:HABBY_REQUIRE_STANDARD_USER='1'
+$env:HABBY_NATIVE_TEST_ROOT=$PSScriptRoot
+$env:HABBY_ACL_PROBE_MANIFEST=Join-Path $PSScriptRoot 'probe.json'
 $source = Join-Path $ProjectRoot 'tests/windows-state.test.ts'
 if (Test-Path -LiteralPath $source) {
   & $NodePath --import (Join-Path $ProjectRoot 'node_modules/tsx/dist/loader.mjs') --test $source

@@ -26,8 +26,8 @@ These example ports are configuration defaults, not protocol constants.
 
 | Path | Listener / ingress | Application policy |
 | --- | --- | --- |
-| Local agent | `http://127.0.0.1:3001/mcp` | No token; local/trusted agent tools only |
-| Direct Tailnet agent | `http://<host-Tailscale-IP>:3001/mcp`, TCP-forwarded by Tailscale Serve to `127.0.0.1:3001` | No token; Tailscale grants enforce who can reach it |
+| Local agent | `http://127.0.0.1:4040/mcp` | No token; local/trusted agent tools only |
+| Direct Tailnet agent | `http://<host-Tailscale-IP>:4040/mcp`, TCP-forwarded by Tailscale Serve to `127.0.0.1:4040` | No token; Tailscale grants enforce who can reach it |
 | Satellite | `wss://127.0.0.1:3002/satellite` | Pinned local TLS plus per-user registration credential; window-bound routing |
 | Public agent | Trusted HTTPS reverse proxy or Funnel → `127.0.0.1:3003` | OAuth bearer required on every MCP request, including proxy-originated loopback traffic |
 
@@ -36,16 +36,16 @@ These example ports are configuration defaults, not protocol constants.
 Tailscale Serve supports raw TCP forwarding on any valid port, so the portable trusted route can be installed as:
 
 ```sh
-tailscale serve --bg --tcp=3001 tcp://127.0.0.1:3001
+tailscale serve --bg --tcp=4040 tcp://127.0.0.1:4040
 ```
 
 Agents still connect directly to the host's Tailnet IP and MCP port. Tailscale handles encrypted ingress, device authentication and grants before forwarding the HTTP bytes. This avoids depending on platform-specific Node socket/interface binding. [Serve CLI](https://tailscale.com/docs/reference/tailscale-cli/serve), [Tailscale identity](https://tailscale.com/docs/concepts/tailscale-identity)
 
 **Recommendation:** only create the Serve mapping to the agent listener, and only create Funnel/public-proxy mappings to the OAuth listener. Inspect existing configuration first, preserve other services, and verify resulting mappings in the installation diagnostic. Do not run `serve reset` or `funnel reset` as part of ordinary installation.
 
-Funnel accepts public ports **443, 8443 and 10000**, rather than arbitrary port 3001. Serve and Funnel share configuration: a port cannot simultaneously be private Serve and public Funnel; the most recent configuration determines exposure. A Funnel route must never target 3001 or 3002, including through an intermediate proxy. [Funnel CLI](https://tailscale.com/docs/reference/tailscale-cli/funnel), [Serve limitations](https://tailscale.com/docs/features/tailscale-serve)
+Funnel accepts public ports **443, 8443 and 10000**, rather than arbitrary port 4040. Serve and Funnel share configuration: a port cannot simultaneously be private Serve and public Funnel; the most recent configuration determines exposure. A Funnel route must never target 4040 or 3002, including through an intermediate proxy. [Funnel CLI](https://tailscale.com/docs/reference/tailscale-cli/funnel), [Serve limitations](https://tailscale.com/docs/features/tailscale-serve)
 
-**Recommendation:** use a grant permitting the owner's devices and explicitly approved agent tags to reach `tcp:3001`. Other policy rules are additive, so an existing allow-all grant still permits other devices. Sharing a device with someone does not automatically make them an intended terminal administrator. Use network policy deliberately. [Grants syntax](https://tailscale.com/docs/reference/syntax/grants)
+**Recommendation:** use a grant permitting the owner's devices and explicitly approved agent tags to reach `tcp:4040`. Other policy rules are additive, so an existing allow-all grant still permits other devices. Sharing a device with someone does not automatically make them an intended terminal administrator. Use network policy deliberately. [Grants syntax](https://tailscale.com/docs/reference/syntax/grants)
 
 Example policy fragment, to merge with the existing tailnet policy rather than replace it:
 
@@ -54,8 +54,8 @@ Example policy fragment, to merge with the existing tailnet policy rather than r
   "grants": [
     {
       "src": ["owner@example.com", "tag:mcp-agent"],
-      "dst": ["tag:tabby-hub"],
-      "ip": ["tcp:3001"]
+      "dst": ["tag:habby"],
+      "ip": ["tcp:4040"]
     }
   ]
 }

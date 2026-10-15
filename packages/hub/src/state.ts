@@ -49,16 +49,16 @@ export async function privateDirectory(path: string): Promise<void> {
       $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
       $acl.AddAccessRule($rule)
       # Persist only owner/DACL changes; Set-Acl also requests privileged SACL writes.
-      [IO.Directory]::SetAccessControl($env:TABBY_HUB_PRIVATE_STATE_DIR,$acl)
-      foreach($name in (ConvertFrom-Json $env:TABBY_HUB_PRIVATE_STATE_FILES)) {
-        $file=Join-Path $env:TABBY_HUB_PRIVATE_STATE_DIR $name
+      [IO.Directory]::SetAccessControl($env:HABBY_PRIVATE_STATE_DIR,$acl)
+      foreach($name in (ConvertFrom-Json $env:HABBY_PRIVATE_STATE_FILES)) {
+        $file=Join-Path $env:HABBY_PRIVATE_STATE_DIR $name
         if(Test-Path -LiteralPath $file) {
           ${windowsPrivateFileAcl}
         }
       }`;
     await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-      { windowsHide: true, env: { ...process.env, TABBY_HUB_PRIVATE_STATE_DIR: path,
-        TABBY_HUB_PRIVATE_STATE_FILES: JSON.stringify(PRIVATE_STATE_FILES.map(file => file.name)) } });
+      { windowsHide: true, env: { ...process.env, HABBY_PRIVATE_STATE_DIR: path,
+        HABBY_PRIVATE_STATE_FILES: JSON.stringify(PRIVATE_STATE_FILES.map(file => file.name)) } });
   } else await chmod(path, 0o700);
 }
 async function securePrivateFile(path: string): Promise<void> {
@@ -66,10 +66,10 @@ async function securePrivateFile(path: string): Promise<void> {
     // The token's default owner can be Administrators even inside a user-owned directory.
     const script = `$ErrorActionPreference='Stop'; $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
       $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
-      $file=$env:TABBY_HUB_PRIVATE_STATE_FILE
+      $file=$env:HABBY_PRIVATE_STATE_FILE
       ${windowsPrivateFileAcl}`;
     await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-      { windowsHide: true, timeout: 30000, env: { ...process.env, TABBY_HUB_PRIVATE_STATE_FILE: path } });
+      { windowsHide: true, timeout: 30000, env: { ...process.env, HABBY_PRIVATE_STATE_FILE: path } });
   } else await chmod(path, 0o600);
 }
 export async function writePrivateFile(path: string, content: string | Buffer): Promise<void> {
@@ -108,7 +108,7 @@ export async function initializeState(stateDir = defaultStateDir(), overrides: P
   try { config = await readConfig(stateDir); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    config = { stateDir, trustedPort: 3001, satellitePort: 3002, publicPort: 3003 };
+    config = { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 };
   }
   config = configSchema.parse({ ...config, ...overrides, stateDir });
   validatePublicUrl(config.publicUrl);
@@ -125,7 +125,7 @@ export async function initializeState(stateDir = defaultStateDir(), overrides: P
       certificate: z.string().min(100), credential: z.string().min(40) }).strict().parse(JSON.parse(await readFile(secretsPath, 'utf8')));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    const pems = await generate([{ name: 'commonName', value: 'Tabby Hub local satellite listener' }], {
+    const pems = await generate([{ name: 'commonName', value: 'Habby local satellite listener' }], {
       keyType: 'ec', curve: 'P-256', algorithm: 'sha256',
       notAfterDate: new Date(Date.now() + 10 * 365 * 86400000), extensions: [
         // Electron's BoringSSL requires a CA trust anchor; clients also pin this exact SPKI.

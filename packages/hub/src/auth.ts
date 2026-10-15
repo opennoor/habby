@@ -231,7 +231,7 @@ export async function createPublicAuth(config: HubConfig, options: { deferOrigin
     try {
       if (req.headers.origin && req.headers.origin !== origin) { reply(res, 403, { error: 'Untrusted browser origin.' }); return true; }
       if (path === metadataPath) {
-        reply(res, 200, { resource: resource.href, resource_name: 'Tabby Hub', authorization_servers: [issuer], scopes_supported: SCOPES, bearer_methods_supported: ['header'] }); return true;
+        reply(res, 200, { resource: resource.href, resource_name: 'Habby', authorization_servers: [issuer], scopes_supported: SCOPES, bearer_methods_supported: ['header'] }); return true;
       }
       if (discovery || path.startsWith(issuerPath + '/')) {
         secureHeaders(req);
@@ -282,7 +282,7 @@ export async function createPublicAuth(config: HubConfig, options: { deferOrigin
         if (!context.session.enroll) requireOwner(context.session);
         if (req.method !== 'POST') throw new Error('POST required.');
         if (path.endsWith('/options')) {
-          const opts = await generateRegistrationOptions({ rpName: 'Tabby Hub', rpID: resource.hostname, userName: 'Tabby Hub owner',
+          const opts = await generateRegistrationOptions({ rpName: 'Habby', rpID: resource.hostname, userName: 'Habby owner',
             userID: new TextEncoder().encode(OWNER), attestationType: 'none', authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
             excludeCredentials: credentials().map(row => ({ id: row.id, transports: row.transports ? JSON.parse(row.transports) : undefined })) });
           requireCurrent(context.session);

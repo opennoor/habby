@@ -1,10 +1,10 @@
 {
-  "name": "tabby-hub-mcp",
-  "version": "1.0.0",
+  "name": "habby",
+  "version": "1.1.0",
   "description": "One MCP Hub for every Tabby window",
   "type": "module",
   "license": "MIT",
-  "repository": "github:Sojaner/tabby-hub-mcp",
+  "repository": "github:Sojaner/habby",
   "packageManager": "pnpm@11.6.0",
   "engines": {
     "node": ">=24.21.0"
@@ -17,7 +17,7 @@
     }
   },
   "bin": {
-    "tabby-hub": "dist/packages/hub/src/cli.js"
+    "habby": "dist/packages/hub/src/cli.js"
   },
   "files": [
     "dist",

@@ -13,7 +13,7 @@ import { initializeState } from '../packages/hub/src/state.js';
 assert.equal(process.platform, 'win32', 'Run on native Windows.');
 const execute = promisify(execFile);
 const releaseDir = resolve(process.argv[2] ?? 'dist/releases');
-const taskName = `TabbyHubMCP-${(process.env.USERNAME ?? 'user').replace(/[^\w.-]/g, '_')}`;
+const taskName = `HabbyMCP-${(process.env.USERNAME ?? 'user').replace(/[^\w.-]/g, '_')}`;
 const psQuote = (s: string) => "'" + s.replaceAll("'", "''") + "'";
 const ps = (script: string, env = process.env) => execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand',
   Buffer.from(`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules'); ${script}; exit 0`, 'utf16le').toString('base64')],
@@ -23,7 +23,7 @@ await ps(`${scheduler} try { $null=$folder.GetTask(${psQuote(taskName)}); throw 
   catch { if($_.Exception.GetBaseException().HResult -ne -2147024894) { throw } }`);
 const root = await mkdtemp(join(tmpdir(), 'tabby-package-'));
 const local = join(root, 'local space & café'), stateDir = join(local, 'state'), pluginDir = join(local, 'plugins');
-const env = { ...process.env, LOCALAPPDATA: local, TABBY_HUB_STATE_DIR: stateDir,
+const env = { ...process.env, LOCALAPPDATA: local, HABBY_STATE_DIR: stateDir,
   PATH: `${process.env.SystemRoot}\\System32;${process.env.SystemRoot};${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0` };
 let taskOwned = false;
 let client: Client | undefined;
@@ -40,8 +40,8 @@ async function waitFor<T>(check: () => Promise<T>, label: string, timeout = 3000
   }
   throw new Error(`Timed out: ${label}`);
 }
-const bundleName = 'tabby-hub-1.0.0-win-x64';
-const bundle = join(local, 'TabbyHub', 'versions', '1.0.0-win-x64');
+const bundleName = 'habby-1.1.0-win-x64';
+const bundle = join(local, 'Habby', 'versions', '1.1.0-win-x64');
 let runtime = join(bundle, 'runtime', 'node.exe'), cli = join(bundle, 'dist', 'packages', 'hub', 'src', 'cli.js');
 const run = (...args: string[]) => execute(runtime, [cli, ...args, '--state-dir', stateDir], { env, windowsHide: true, timeout: 120000 });
 try {
@@ -52,7 +52,7 @@ try {
   await mkdir(join(pluginDir, 'node_modules', 'unrelated'), { recursive: true });
   await writeFile(join(pluginDir, 'node_modules', 'unrelated', 'keep'), 'retain');
   const installer = resolve('scripts/install.ps1');
-  const install = (directory: string) => ps(`& ${psQuote(installer)} -Version 1.0.0 -ArchiveDir ${psQuote(directory)} -PluginDir ${psQuote(pluginDir)}`, env);
+  const install = (directory: string) => ps(`& ${psQuote(installer)} -Version 1.1.0 -ArchiveDir ${psQuote(directory)} -PluginDir ${psQuote(pluginDir)}`, env);
   const bad = join(root, 'bad-checksum'); await mkdir(bad);
   await cp(join(releaseDir, `${bundleName}.tar.gz`), join(bad, `${bundleName}.tar.gz`));
   await writeFile(join(bad, 'SHA256SUMS'), `${'0'.repeat(64)}  ${bundleName}.tar.gz\n`);
@@ -92,7 +92,7 @@ try {
   await waitFor(async () => !await health(), 'daemon shutdown');
   assert.equal(await readFile(join(stateDir, 'secrets.json'), 'utf8'), secrets);
   await access(join(pluginDir, 'node_modules', 'unrelated', 'keep'));
-  await assert.rejects(access(join(pluginDir, 'node_modules', 'tabby-hub-satellite')));
+  await assert.rejects(access(join(pluginDir, 'node_modules', 'habby-satellite')));
   await run('uninstall');
   taskOwned = true; await run('install', '--no-start', '--plugin-dir', pluginDir);
   assert.equal(await health(), false);

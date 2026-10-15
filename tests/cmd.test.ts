@@ -9,7 +9,7 @@ import { CommandCapture, commandWrapper } from '../packages/satellite/src/runtim
 // Windows local and version-release test runs use actual cmd.exe and PS5.1.
 // Other hosts skip; a string-shape assertion is not evidence of native CMD parsing.
 function runCommands(t: any, commands: string[], setup = '') {
-    const timeout = Number(process.env.TABBY_HUB_NATIVE_TEST_TIMEOUT_MS ?? 30000);
+    const timeout = Number(process.env.HABBY_NATIVE_TEST_TIMEOUT_MS ?? 30000);
     assert.ok(Number.isInteger(timeout) && timeout >= 30000 && timeout <= 900000, 'Invalid native test timeout.');
     const directory = mkdtempSync(join(tmpdir(), 'tabby-cmd-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));

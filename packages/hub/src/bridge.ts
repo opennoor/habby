@@ -27,7 +27,7 @@ export async function runBridge(url: string, options: BridgeOptions = {}): Promi
   let closed = false;
   let complete!: () => void;
   const done = new Promise<void>(resolve => { complete = resolve; });
-  const report = options.onerror ?? ((error: Error) => process.stderr.write(`Tabby Hub bridge: ${error.message}\n`));
+  const report = options.onerror ?? ((error: Error) => process.stderr.write(`Habby bridge: ${error.message}\n`));
   const close = async () => {
     if (closed) return;
     closed = true;

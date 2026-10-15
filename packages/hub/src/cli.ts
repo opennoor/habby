@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   if (command === 'bridge') {
     let url = values.url;
     if (!url) { const config = await readConfig(stateDir); url = `http://127.0.0.1:${config.trustedPort}/mcp`; }
-    await runBridge(url, { token: process.env.TABBY_HUB_TOKEN }); return;
+    await runBridge(url, { token: process.env.HABBY_TOKEN }); return;
   }
   if (command === 'uninstall') {
     const config = await readConfig(stateDir);
@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   const config = state.config;
   if (command === 'start') {
     const hub = await startHub(config);
-    process.stderr.write(`Tabby Hub listening at http://127.0.0.1:${config.trustedPort}/mcp\n`);
+    process.stderr.write(`Habby listening at http://127.0.0.1:${config.trustedPort}/mcp\n`);
     let closing = false;
     const close = () => { if (!closing) { closing = true; void hub.close().catch(error => process.stderr.write(String(error) + '\n')); } };
     process.once('SIGINT', close); process.once('SIGTERM', close);
@@ -109,15 +109,15 @@ async function adminRequest(config: HubConfig, path: string, method: string, bod
   });
 }
 function print(value: unknown): void { process.stdout.write(JSON.stringify(value, null, 2) + '\n'); }
-const help = `Tabby Hub — one MCP endpoint for every Tabby window
+const help = `Habby — one MCP endpoint for every Tabby window
 
-  tabby-hub install [--plugin-dir PATH] [--no-start]
-  tabby-hub start | status | doctor | uninstall [--purge]
-  tabby-hub bridge [--url URL]   (optional TABBY_HUB_TOKEN environment variable)
-  tabby-hub expose tailnet
-  tabby-hub expose public --url https://HOST/PREFIX/mcp [--funnel]
-  tabby-hub enroll
-  tabby-hub client --name NAME --redirect CALLBACK [--redirect CALLBACK]
+  habby install [--plugin-dir PATH] [--no-start]
+  habby start | status | doctor | uninstall [--purge]
+  habby bridge [--url URL]   (optional HABBY_TOKEN environment variable)
+  habby expose tailnet
+  habby expose public --url https://HOST/PREFIX/mcp [--funnel]
+  habby enroll
+  habby client --name NAME --redirect CALLBACK [--redirect CALLBACK]
 
 All commands accept --state-dir PATH. Ports: --trusted-port, --satellite-port, --public-port.
 Public exposure and host installation happen only when their commands are run.

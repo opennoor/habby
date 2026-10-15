@@ -25,10 +25,10 @@ jobs:
       - name: Smoke-test Linux bundle independently of development dependencies
         run: |
           mkdir /tmp/tabby-bundle
-          tar -xzf dist/releases/tabby-hub-*-linux-x64.tar.gz -C /tmp/tabby-bundle
-          /tmp/tabby-bundle/tabby-hub-*-linux-x64/bin/tabby-hub --help
+          tar -xzf dist/releases/habby-*-linux-x64.tar.gz -C /tmp/tabby-bundle
+          /tmp/tabby-bundle/habby-*-linux-x64/bin/habby --help
       - uses: actions/upload-artifact@v4
         with:
-          name: tabby-hub-release-archives
+          name: habby-release-archives
           path: dist/releases/*
           if-no-files-found: error

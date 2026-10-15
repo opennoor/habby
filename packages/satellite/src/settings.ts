@@ -3,10 +3,10 @@ import { ConfigService } from 'tabby-core';
 import { SettingsTabProvider } from 'tabby-settings';
 import { SatelliteService } from './satellite.service';
 
-@Component({ selector: 'tabby-hub-settings', template: `
-<h3>Tabby Hub satellite</h3>
+@Component({ selector: 'habby-settings', template: `
+<h3>Habby satellite</h3>
 <p>Status: {{ satellite.client.status }} · Window: {{ satellite.client.windowId }}</p>
-<p>The Hub runs independently. Run <code>tabby-hub install</code> to set up its private connection.</p>
+<p>The Hub runs independently. Run <code>habby install</code> to set up its private connection.</p>
 <label><input type="checkbox" [(ngModel)]="config.store.hubSatellite.enabled" (ngModelChange)="changed()"> Connect this window to Hub</label>
 <div><label>Hub state directory <input class="form-control" [(ngModel)]="config.store.hubSatellite.stateDir" (change)="changed()" placeholder="Use installed location"></label></div>
 <h4>Terminal controls</h4>
@@ -31,6 +31,6 @@ export class SatelliteSettingsComponent {
 }
 @Injectable()
 export class SatelliteSettingsProvider extends SettingsTabProvider {
-    id = 'hub-satellite'; icon = 'satellite-dish'; title = 'Tabby Hub';
+    id = 'hub-satellite'; icon = 'satellite-dish'; title = 'Habby';
     getComponentType() { return SatelliteSettingsComponent; }
 }

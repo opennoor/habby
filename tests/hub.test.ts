@@ -24,7 +24,7 @@ async function freePort(): Promise<number> {
   await new Promise<void>(resolve => server.close(() => resolve())); return port;
 }
 async function temporaryConfig(): Promise<HubConfig> {
-  return { stateDir: await mkdtemp(join(tmpdir(), 'tabby-hub-test-')), trustedPort: await freePort(),
+  return { stateDir: await mkdtemp(join(tmpdir(), 'habby-test-')), trustedPort: await freePort(),
     satellitePort: await freePort(), publicPort: await freePort() };
 }
 async function satellite(trust: SatelliteTrust, windowId: string) {

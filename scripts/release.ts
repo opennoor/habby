@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   await access(path.join(root, 'dist/packages/hub/src/cli.js'));
   await access(path.join(root, 'packages/satellite/dist/index.js'));
   const output = path.join(root, 'dist', 'releases'); await mkdir(output, { recursive: true });
-  const staging = await mkdtemp(path.join(os.tmpdir(), 'tabby-hub-release-'));
+  const staging = await mkdtemp(path.join(os.tmpdir(), 'habby-release-'));
   try {
     const application = path.join(staging, 'application'); await mkdir(application, { recursive: true });
     // Native hoisting preserves shared module identity (ASN decorator registries break if copied per edge).
@@ -76,16 +76,16 @@ async function main(): Promise<void> {
       const archivePath = path.join(staging, filename); await writeFile(archivePath, archive);
       if (extension === 'zip' && process.platform !== 'win32') await execute('unzip', ['-q', archivePath, '-d', staging]);
       else await execute('tar', ['-xf', archivePath, '-C', staging]);
-      const bundleName = `tabby-hub-${manifest.version}-${target}`, bundle = path.join(staging, bundleName);
+      const bundleName = `habby-${manifest.version}-${target}`, bundle = path.join(staging, bundleName);
       await cp(application, bundle, { recursive: true }); await mkdir(path.join(bundle, 'runtime/bin'), { recursive: true });
       const binary = target.startsWith('win-') ? 'node.exe' : 'bin/node';
       await cp(path.join(staging, runtimeName, binary), path.join(bundle, 'runtime', binary));
       await cp(path.join(staging, runtimeName, 'LICENSE'), path.join(bundle, 'runtime/LICENSE'));
       await writeFile(path.join(bundle, 'runtime/verification.json'), JSON.stringify({ version: NODE_VERSION, archive: filename, sha256: official, source: `${base}/${filename}` }, null, 2));
       await mkdir(path.join(bundle, 'bin'));
-      await writeFile(path.join(bundle, 'bin/tabby-hub'), '#!/bin/sh\nbase=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexec "$base/runtime/bin/node" "$base/dist/packages/hub/src/cli.js" "$@"\n');
-      await chmod(path.join(bundle, 'bin/tabby-hub'), 0o755);
-      await writeFile(path.join(bundle, 'bin/tabby-hub.cmd'), '@echo off\r\n"%~dp0..\\runtime\\node.exe" "%~dp0..\\dist\\packages\\hub\\src\\cli.js" %*\r\n');
+      await writeFile(path.join(bundle, 'bin/habby'), '#!/bin/sh\nbase=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexec "$base/runtime/bin/node" "$base/dist/packages/hub/src/cli.js" "$@"\n');
+      await chmod(path.join(bundle, 'bin/habby'), 0o755);
+      await writeFile(path.join(bundle, 'bin/habby.cmd'), '@echo off\r\n"%~dp0..\\runtime\\node.exe" "%~dp0..\\dist\\packages\\hub\\src\\cli.js" %*\r\n');
       const releasePath = path.join(output, `${bundleName}.tar.gz`);
       await execute('tar', ['-czf', releasePath, '-C', staging, bundleName]);
       sums.push(`${sha(await readFile(releasePath))}  ${path.basename(releasePath)}`);

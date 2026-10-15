@@ -20,9 +20,9 @@ export function commandWrapper(command: string, shell: Shell, nonce = randomUUID
     let text: string;
     if (shell === 'fish') {
         const escaped = command.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
-        text = `printf '\\n%s%s\\n' '${head}' 'START__'; eval '${escaped}'; set -l tabby_hub_${nonce} $status; printf '\\n%s%s:%s\\n' '${head}' 'END__' $tabby_hub_${nonce}`;
+        text = `printf '\\n%s%s\\n' '${head}' 'START__'; eval '${escaped}'; set -l habby_${nonce} $status; printf '\\n%s%s:%s\\n' '${head}' 'END__' $habby_${nonce}`;
     } else if (shell === 'powershell') {
-        const status = `tabby_hub_${nonce}`;
+        const status = `habby_${nonce}`;
         const script = `${command}\n$global:${status}_ok=$?; $global:${status}_exit=$LASTEXITCODE`;
         // One physical input line: interactive PSReadLine otherwise submits embedded newlines separately.
         const encoded = Buffer.from(script, 'utf8').toString('base64');
@@ -35,7 +35,7 @@ export function commandWrapper(command: string, shell: Shell, nonce = randomUUID
         // A child batch parser cannot consume the outer prompt's completion markers.
         // Base64 staging keeps quotes/metacharacters out of that parser and bounds each
         // input line below CMD's 8191-character limit, including for remote Windows panes.
-        const payload = `tabby-hub-${nonce}.b64`, batch = `tabby-hub-${nonce}.cmd`, completion = `tabby-hub-${nonce}.done`;
+        const payload = `habby-${nonce}.b64`, batch = `habby-${nonce}.cmd`, completion = `habby-${nonce}.done`;
         const encoded = Buffer.from(command.replace(/\r\n|\r|\n/g, '\r\n'), 'utf8').toString('base64');
         const chunks = encoded.match(/.{1,4096}/g) ?? [''];
         const staging = chunks.map((chunk, index) => `${index ? '>>' : '>'} "%TEMP%\\${payload}" echo(${chunk}`).join('\r\n');
@@ -66,7 +66,7 @@ exit $code`;
         text = `echo ${start}\r\n${staging}\r\n"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -NonInteractive -EncodedCommand ${launcher}\r\necho.\r\necho ${end}:%errorlevel%\r\ndel /q "%TEMP%\\${payload}" >nul 2>&1`;
     } else {
         const escaped = command.replaceAll("'", "'\\''");
-        text = `printf '\\n%s%s\\n' '${head}' 'START__'; eval '${escaped}'; tabby_hub_${nonce}=$?; printf '\\n%s%s:%s\\n' '${head}' 'END__' "$tabby_hub_${nonce}"`;
+        text = `printf '\\n%s%s\\n' '${head}' 'START__'; eval '${escaped}'; habby_${nonce}=$?; printf '\\n%s%s:%s\\n' '${head}' 'END__' "$habby_${nonce}"`;
     }
     return { text, start, end };
 }
