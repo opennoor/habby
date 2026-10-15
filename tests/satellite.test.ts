@@ -17,6 +17,7 @@ test('wrappers use native shell syntax and shell hints reject REPLs', () => {
     assert.throws(() => shellFromHints('python REPL'), /known shell/);
     assert.match(commandWrapper('false', 'fish').text, /\$status/);
     assert.match(commandWrapper('Write-Error failure', 'powershell').text, /LASTEXITCODE/);
+    assert.match(commandWrapper('Write-Output hello', 'powershell').text, /^\[Console\]::WriteLine\(\); /);
     assert.match(commandWrapper('exit \/b 4', 'cmd').text, /\r\necho\.\r\necho .*%errorlevel%/);
 });
 test('command markers survive arbitrary output chunk boundaries and ignore command echo', () => {
