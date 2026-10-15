@@ -51,9 +51,9 @@ $env:HABBY_NATIVE_TEST_ROOT=$PSScriptRoot
 $env:HABBY_ACL_PROBE_MANIFEST=Join-Path $PSScriptRoot 'probe.json'
 $source = Join-Path $ProjectRoot 'tests/windows-state.test.ts'
 if (Test-Path -LiteralPath $source) {
-  & $NodePath --import (Join-Path $ProjectRoot 'node_modules/tsx/dist/loader.mjs') --test $source
+  & $NodePath --import tsx --test 'tests/windows-state.test.ts'
 } else {
-  & $NodePath --test (Join-Path $ProjectRoot 'tests/windows-state.test.js')
+  & $NodePath --test 'tests/windows-state.test.js'
 }
 exit $LASTEXITCODE
 '@
@@ -87,7 +87,7 @@ $ErrorActionPreference='Stop'
 $manifest=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $PSScriptRoot 'probe.json') | ConvertFrom-Json
 if([string]::IsNullOrWhiteSpace($manifest.cleanupDir)) { throw 'Missing fixture cleanup directory.' }
 $directory=[IO.Path]::GetFullPath($manifest.cleanupDir)
-if([IO.Path]::GetDirectoryName($directory) -ne $PSScriptRoot -or [IO.Path]::GetFileName($directory) -notlike 'tabby-state-acl-*') {
+if([IO.Path]::GetDirectoryName($directory) -ne $PSScriptRoot -or [IO.Path]::GetFileName($directory) -notlike 'habby-state-acl-*') {
   throw 'Fixture cleanup directory is outside this test root.'
 }
 Remove-Item -LiteralPath $directory -Recurse -Force

@@ -27,6 +27,13 @@ test('command markers survive arbitrary output chunk boundaries and ignore comma
     for (const char of stream) { result = capture.feed(char); if (result) break; }
     assert.deepEqual(result, { output: 'hello', exitCode: 7, truncated: false });
 });
+test('command markers survive PowerShell control sequences at line starts', () => {
+    const { start, end } = commandWrapper('Write-Output hello', 'powershell', 'abc');
+    const capture = new CommandCapture(start, end);
+    let result;
+    for (const char of `\u001b[?1h${start}\nhello\n\u001b[?1h${end}:OUTCOME_UNKNOWN\n`) result = capture.feed(char) ?? result;
+    assert.deepEqual(result, { output: 'hello', truncated: false, error: 'OUTCOME_UNKNOWN', outcomeUnknown: true });
+});
 test('Fish command text is quoted independently of the completion markers', () => {
     const wrapper = commandWrapper("printf '%s\\n' 'a\\b'\nprintf \"unterminated", 'fish', 'abc');
     assert.equal(wrapper.text, "printf '\\n%s%s\\n' '__TABBY_abc_' 'START__'; eval 'printf \\'%s\\\\n\\' \\'a\\\\b\\'\nprintf \"unterminated'; set -l habby_abc $status; printf '\\n%s%s:%s\\n' '__TABBY_abc_' 'END__' $habby_abc");

@@ -76,11 +76,11 @@ export class CommandCapture {
     feed(chunk: string): { output: string; exitCode?: number; truncated: boolean; error?: 'OUTCOME_UNKNOWN'; outcomeUnknown?: true } | undefined {
         this.pending += chunk;
         if (!this.started) {
-            const match = new RegExp(`(?:^|\\r?\\n)${this.start}\\r?\\n`).exec(this.pending);
+            const match = new RegExp(`(?:^|\\r?\\n)(?:\\x1b\\[[0-?]*[ -/]*[@-~])*${this.start}\\r?\\n`).exec(this.pending);
             if (!match) { this.pending = this.pending.slice(-this.start.length - 4); return; }
             this.pending = this.pending.slice(match.index + match[0].length); this.started = true;
         }
-        const finish = new RegExp(`(?:^|\\r?\\n)${this.end}:(-?\\d+|OUTCOME_UNKNOWN)\\r?\\n`).exec(this.pending);
+        const finish = new RegExp(`(?:^|\\r?\\n)(?:\\x1b\\[[0-?]*[ -/]*[@-~])*${this.end}:(-?\\d+|OUTCOME_UNKNOWN)\\r?\\n`).exec(this.pending);
         if (finish) {
             this.append(this.pending.slice(0, finish.index));
             return finish[1] === 'OUTCOME_UNKNOWN'
