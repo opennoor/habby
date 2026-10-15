@@ -1,6 +1,6 @@
 {
   "name": "habby",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "One MCP Hub for every Tabby window",
   "type": "module",
   "license": "MIT",

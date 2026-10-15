@@ -31,6 +31,23 @@ test('all supervisor definitions quote paths and enforce restart/session limits'
   assert.equal(defaultPluginDir('win32', '/home/user', { APPDATA: '/roaming' }), path.join('/roaming', 'tabby', 'plugins'));
 });
 
+test('Windows registration uses the local machine when SSH reports WORKGROUP', async t => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'habby-windows-account-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const source = path.join(tmp, 'source'), stateDir = path.join(tmp, 'state');
+  await mkdir(path.join(source, 'dist'), { recursive: true }); await mkdir(stateDir);
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'tabby-habby' }));
+  await writeFile(path.join(source, 'dist', 'index.js'), 'plugin');
+  await writeFile(path.join(stateDir, 'satellite.json'), '{}');
+  const calls: string[] = [];
+  await installHub({ config: { stateDir, trustedPort: 4040, satellitePort: 3002, publicPort: 3003 },
+    platform: 'win32', home: tmp, pluginDir: path.join(tmp, 'plugins'), pluginSource: source, start: false,
+    env: { USERDOMAIN: 'WORKGROUP', COMPUTERNAME: 'RDPWINDOWS', USERNAME: 'rojan' },
+    exec: async (_file, args) => { calls.push(args.join(' ')); } });
+  assert.match(await readFile(path.join(stateDir, 'task.xml'), 'utf16le'), /<UserId>RDPWINDOWS\\rojan<\/UserId>/);
+  assert.match(calls.join('\n'), /-User 'RDPWINDOWS\\rojan'/);
+});
+
 test('installation, upgrade and uninstall preserve other plugins and private state', async t => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'tabby-install-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));

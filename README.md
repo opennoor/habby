@@ -4,7 +4,7 @@ One MCP endpoint for all your Tabby windows. A standalone Node daemon routes
 requests to a satellite plugin in each window, preserving its tabs, panes,
 profiles, terminals and SFTP sessions.
 
-[Download v1.2.0](https://github.com/Sojaner/habby/releases/tag/v1.2.0)
+[Download v1.2.1](https://github.com/Sojaner/habby/releases/tag/v1.2.1)
 for bundled Node runtimes, the Hub and the satellite plugin. See the
 [installation instructions](docs/installation.md) and [previous release validation](docs/validation-1.0.0.md).
 

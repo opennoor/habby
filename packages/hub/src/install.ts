@@ -46,6 +46,11 @@ function servicePath(platform: Platform, home: string, stateDir: string, env: No
 }
 const psQuote = (s: string) => "'" + s.replaceAll("'", "''") + "'";
 function taskName(env: NodeJS.ProcessEnv): string { return `HabbyMCP-${(env.USERNAME ?? 'user').replace(/[^\w.-]/g, '_')}`; }
+function windowsAccount(env: NodeJS.ProcessEnv): string {
+  const domain = env.USERDOMAIN?.toUpperCase() === 'WORKGROUP' ? env.COMPUTERNAME : env.USERDOMAIN;
+  if (!domain || !env.USERNAME) throw new Error('Cannot identify the Windows account for the scheduled task.');
+  return `${domain}\\${env.USERNAME}`;
+}
 async function pluginSource(): Promise<string> {
   for (const relative of ['../../../../packages/satellite', '../../../satellite', '../../satellite']) {
     const candidate = fileURLToPath(new URL(relative, import.meta.url));
@@ -94,7 +99,7 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
   await mkdir(path.dirname(target), { recursive: true });
   const start = options.start !== false;
   // An all-users logon trigger requires elevation; scope it to the installing account.
-  const user = platform === 'win32' ? `${env.USERDOMAIN}\\${env.USERNAME}` : undefined;
+  const user = platform === 'win32' ? windowsAccount(env) : undefined;
   const content = renderSupervisor(platform, options.executable ?? process.execPath, options.entrypoint ?? fileURLToPath(new URL('./cli.js', import.meta.url)), config.stateDir, start, user);
   await writePrivateFile(target, platform === 'win32' ? Buffer.from('\uFEFF' + content, 'utf16le') : content);
   if (platform === 'linux') {
@@ -119,7 +124,7 @@ export async function installHub(options: InstallOptions): Promise<{ pluginDir: 
       }
     }
   } else {
-    await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $existing=Get-ScheduledTask -TaskName ${psQuote(taskName(env))} -ErrorAction SilentlyContinue; if ($existing) { $existing | Stop-ScheduledTask }; Register-ScheduledTask -TaskName ${psQuote(taskName(env))} -Xml (Get-Content -Raw -LiteralPath ${psQuote(target)}) -User ($env:USERDOMAIN+'\\'+$env:USERNAME) -Force | Out-Null`]);
+    await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $existing=Get-ScheduledTask -TaskName ${psQuote(taskName(env))} -ErrorAction SilentlyContinue; if ($existing) { $existing | Stop-ScheduledTask }; Register-ScheduledTask -TaskName ${psQuote(taskName(env))} -Xml (Get-Content -Raw -LiteralPath ${psQuote(target)}) -User ${psQuote(user!)} -Force | Out-Null`]);
     if (start) await exec('schtasks.exe', ['/Run', '/TN', taskName(env)]);
   }
   return { pluginDir, servicePath: target, supervisor: platform, started: start };

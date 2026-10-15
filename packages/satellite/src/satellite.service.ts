@@ -28,7 +28,7 @@ export class SatelliteService implements SatelliteAdapter, OnDestroy {
         @Inject(BOOTSTRAP_DATA) private bootstrap: BootstrapData) {
         this.tools = new Map([...terminal.mcpTools, ...tabs.mcpTools, ...sftp.mcpTools].map(tool => [tool.name, tool]));
         this.client = new SatelliteClient(() => JSON.parse(readFileSync(join(this.stateDir(), 'satellite.json'), 'utf8')) as SatelliteTrust,
-            this, { nativeWindowId: bootstrap.windowID, platform: process.platform, pluginVersion: '1.2.0' });
+            this, { nativeWindowId: bootstrap.windowID, platform: process.platform, pluginVersion: '1.2.1' });
     }
     private stateDir() {
         if (this.config.store.hubSatellite?.stateDir) return this.config.store.hubSatellite.stateDir;

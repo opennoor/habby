@@ -36,7 +36,7 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
     const handler = createMcpHandler(context => {
       const principal = publicAccess ? context.authInfo?.extra?.principal as Principal : LOCAL_PRINCIPAL;
       if (!principal) throw new HubError('UNAUTHORIZED', 'Public MCP requires a verified token.');
-      const server = new McpServer({ name: 'Habby', version: '1.2.0' });
+      const server = new McpServer({ name: 'Habby', version: '1.2.1' });
       for (const tool of TOOLS) {
         try { authorize(principal, tool.name); } catch { continue; }
         server.registerTool(tool.name, { description: tool.description, inputSchema: tool.schema,
@@ -68,7 +68,7 @@ export async function startHub(config: HubConfig, options: { authFactory?: Publi
   track(trustedServer);
   async function routeTrusted(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!trustedRequest(req, config)) return json(res, 403, { error: 'Untrusted Host or browser Origin.' });
-    if (req.url === '/health' && req.method === 'GET') return json(res, 200, { name: 'Habby', version: '1.2.0', alive: true });
+    if (req.url === '/health' && req.method === 'GET') return json(res, 200, { name: 'Habby', version: '1.2.1', alive: true });
     if (req.url !== '/mcp') return json(res, 404, { error: 'Not found.' });
     await trustedNode(req, res);
   }

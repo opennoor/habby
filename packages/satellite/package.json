@@ -1,6 +1,6 @@
 {
   "name": "tabby-habby",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Roy Gh",
   "description": "Window satellite for Habby MCP",
   "main": "dist/index.js",

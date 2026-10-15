@@ -30,7 +30,9 @@ export function commandWrapper(command: string, shell: Shell, nonce = randomUUID
         // Clear the marker's trailing cells only on a real console, leaving pipes unchanged.
         const line = (value: string) => `[Console]::Write(${value}); if(-not [Console]::IsOutputRedirected){[Console]::Write([char]27+'[K')}; [Console]::WriteLine()`;
         // Out-Default flushes PowerShell's delayed object formatting before the completion marker.
-        text = `[Console]::WriteLine(); ${line(`('${head}'+'START__')`)}; $global:LASTEXITCODE=0; $global:${status}_ok=$null; $global:${status}_exit='OUTCOME_UNKNOWN'; try { . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')))) | Out-Default } catch { $global:${status}_ok=$false; $global:${status}_exit=1; $_ | Out-Default }; if (-not $global:${status}_ok -and $global:${status}_exit -eq 0) { $global:${status}_exit=1 }; [Console]::WriteLine(); ${line(`('${head}'+'END__:'+ $global:${status}_exit)`)}; Remove-Variable -Scope Global -Name '${status}_ok','${status}_exit' -ErrorAction SilentlyContinue`;
+        // Some Tabby/ConPTY sessions discard the first injected character. A
+        // leading space is harmless to PowerShell and protects the first token.
+        text = ` [Console]::WriteLine(); ${line(`('${head}'+'START__')`)}; $global:LASTEXITCODE=0; $global:${status}_ok=$null; $global:${status}_exit='OUTCOME_UNKNOWN'; try { . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')))) | Out-Default } catch { $global:${status}_ok=$false; $global:${status}_exit=1; $_ | Out-Default }; if (-not $global:${status}_ok -and $global:${status}_exit -eq 0) { $global:${status}_exit=1 }; [Console]::WriteLine(); ${line(`('${head}'+'END__:'+ $global:${status}_exit)`)}; Remove-Variable -Scope Global -Name '${status}_ok','${status}_exit' -ErrorAction SilentlyContinue`;
     } else if (shell === 'cmd') {
         // A child batch parser cannot consume the outer prompt's completion markers.
         // Base64 staging keeps quotes/metacharacters out of that parser and bounds each
